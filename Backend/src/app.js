@@ -6,6 +6,7 @@ import morgan from "morgan";
 import env from "./config/env.js";
 import healthRoutes from "./routes/health.routes.js";
 import dbHealthRoutes from "./routes/dbHealth.routes.js";
+import authRoutes from "./routes/auth.routes.js";
 
 const app = express();
 
@@ -40,6 +41,7 @@ app.use(express.urlencoded({ extended: true }));
  */
 app.use("/api/health", healthRoutes);
 app.use("/api/health/db", dbHealthRoutes);
+app.use("/api/auth", authRoutes);
 
 /*
  * Root API
