@@ -1,7 +1,7 @@
 {
   "name": "backend",
   "version": "1.0.0",
-   "description": "Backend API for TradeXen algorithmic trading and paper trading platform",
+  "description": "Backend API for TradeXen algorithmic trading and paper trading platform",
   "type": "module",
   "main": "src/server.js",
   "scripts": {
@@ -9,7 +9,7 @@
     "start": "node src/server.js"
   },
   "keywords": [
-     "trading",
+    "trading",
     "paper-trading",
     "algorithmic-trading",
     "mern"
@@ -21,6 +21,7 @@
     "dotenv": "^18.0.4",
     "express": "^5.2.1",
     "helmet": "^8.3.0",
+    "mongoose": "^9.10.2",
     "morgan": "^1.12.1"
   },
   "devDependencies": {
