@@ -8,6 +8,7 @@ import healthRoutes from "./routes/health.routes.js";
 import dbHealthRoutes from "./routes/dbHealth.routes.js";
 import authRoutes from "./routes/auth.routes.js";
 import tradingAccountRoutes from "./routes/tradingAccount.routes.js";
+import marketDataRoutes from "./routes/marketData.routes.js";
 
 const app = express();
 
@@ -23,7 +24,7 @@ app.use(
   cors({
     origin: env.clientUrl,
     credentials: true,
-  })
+  }),
 );
 
 /*
@@ -44,6 +45,7 @@ app.use("/api/health", healthRoutes);
 app.use("/api/health/db", dbHealthRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/trading-account", tradingAccountRoutes);
+app.use("/api/market-data", marketDataRoutes);
 
 /*
  * Root API
