@@ -9,6 +9,7 @@ import dbHealthRoutes from "./routes/dbHealth.routes.js";
 import authRoutes from "./routes/auth.routes.js";
 import tradingAccountRoutes from "./routes/tradingAccount.routes.js";
 import marketDataRoutes from "./routes/marketData.routes.js";
+import orderRoutes from "./routes/order.routes.js";
 
 const app = express();
 
@@ -46,6 +47,7 @@ app.use("/api/health/db", dbHealthRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/trading-account", tradingAccountRoutes);
 app.use("/api/market-data", marketDataRoutes);
+app.use("/api/orders", orderRoutes);
 
 /*
  * Root API
