@@ -1,9 +1,6 @@
 import User from "../models/User.js";
-import {
-  hashPassword,
-  comparePassword,
-  generateToken,
-} from "../utils/auth.js";
+import TradingAccount from "../models/TradingAccount.js";
+import { hashPassword, comparePassword, generateToken } from "../utils/auth.js";
 
 const signup = async (req, res) => {
   try {
@@ -45,12 +42,25 @@ const signup = async (req, res) => {
 
     const hashedPassword = await hashPassword(password);
 
+    // 1. Create user
     const user = await User.create({
       name: name.trim(),
       email: normalizedEmail,
       password: hashedPassword,
     });
 
+    // 2. Automatically create paper trading account
+    const tradingAccount = await TradingAccount.create({
+      user: user._id,
+      accountType: "paper",
+      initialBalance: 1000000,
+      availableBalance: 1000000,
+      investedAmount: 0,
+      currency: "INR",
+      status: "active",
+    });
+
+    // 3. Generate JWT
     const token = generateToken(user._id.toString());
 
     return res.status(201).json({
@@ -62,6 +72,15 @@ const signup = async (req, res) => {
           name: user.name,
           email: user.email,
           role: user.role,
+        },
+        tradingAccount: {
+          id: tradingAccount._id,
+          accountType: tradingAccount.accountType,
+          initialBalance: tradingAccount.initialBalance,
+          availableBalance: tradingAccount.availableBalance,
+          investedAmount: tradingAccount.investedAmount,
+          currency: tradingAccount.currency,
+          status: tradingAccount.status,
         },
         token,
       },
@@ -75,9 +94,6 @@ const signup = async (req, res) => {
     });
   }
 };
-
-
-
 
 const login = async (req, res) => {
   try {
@@ -110,10 +126,7 @@ const login = async (req, res) => {
       });
     }
 
-    const isPasswordValid = await comparePassword(
-      password,
-      user.password
-    );
+    const isPasswordValid = await comparePassword(password, user.password);
 
     if (!isPasswordValid) {
       return res.status(401).json({
@@ -124,6 +137,11 @@ const login = async (req, res) => {
 
     user.lastLogin = new Date();
     await user.save();
+
+    // Find user's trading account
+    const tradingAccount = await TradingAccount.findOne({
+      user: user._id,
+    });
 
     const token = generateToken(user._id.toString());
 
@@ -137,6 +155,17 @@ const login = async (req, res) => {
           email: user.email,
           role: user.role,
         },
+        tradingAccount: tradingAccount
+          ? {
+              id: tradingAccount._id,
+              accountType: tradingAccount.accountType,
+              initialBalance: tradingAccount.initialBalance,
+              availableBalance: tradingAccount.availableBalance,
+              investedAmount: tradingAccount.investedAmount,
+              currency: tradingAccount.currency,
+              status: tradingAccount.status,
+            }
+          : null,
         token,
       },
     });
@@ -152,9 +181,7 @@ const login = async (req, res) => {
 
 const getCurrentUser = async (req, res) => {
   try {
-    const user = await User.findById(req.userId).select(
-      "-password"
-    );
+    const user = await User.findById(req.userId).select("-password");
 
     if (!user) {
       return res.status(404).json({
@@ -163,10 +190,25 @@ const getCurrentUser = async (req, res) => {
       });
     }
 
+    const tradingAccount = await TradingAccount.findOne({
+      user: user._id,
+    });
+
     return res.status(200).json({
       success: true,
       data: {
         user,
+        tradingAccount: tradingAccount
+          ? {
+              id: tradingAccount._id,
+              accountType: tradingAccount.accountType,
+              initialBalance: tradingAccount.initialBalance,
+              availableBalance: tradingAccount.availableBalance,
+              investedAmount: tradingAccount.investedAmount,
+              currency: tradingAccount.currency,
+              status: tradingAccount.status,
+            }
+          : null,
       },
     });
   } catch (error) {

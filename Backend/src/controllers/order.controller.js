@@ -1,3 +1,5 @@
+import TradingAccount from "../models/TradingAccount.js";
+
 import {
   createOrder,
   getOrderById,
@@ -7,25 +9,49 @@ import {
 import { executeOrder } from "../services/orders/order.execution.service.js";
 import { cancelOrder } from "../services/orders/order.cancellation.service.js";
 
+const getUserTradingAccount = async (userId) => {
+  const tradingAccount = await TradingAccount.findOne({
+    user: userId,
+    status: "active",
+  });
+
+  if (!tradingAccount) {
+    throw new Error("Active trading account not found");
+  }
+
+  return tradingAccount;
+};
 
 const createOrderController = async (req, res) => {
   try {
     const {
-      tradingAccountId,
       symbol,
       side,
-      orderType,
+      orderType = "MARKET",
       quantity,
       requestedPrice,
       stopLoss,
       takeProfit,
-      source,
-      strategy,
+      source = "MANUAL",
+      strategy = null,
     } = req.body;
+
+    // Resolve account from authenticated user
+    const tradingAccount = await getUserTradingAccount(
+      req.userId,
+    );
+
+    // Only MANUAL and BOT orders are allowed
+    if (!["MANUAL", "BOT"].includes(source)) {
+      return res.status(400).json({
+        success: false,
+        message: "Order source must be MANUAL or BOT",
+      });
+    }
 
     const order = await createOrder({
       userId: req.userId,
-      tradingAccountId,
+      tradingAccountId: tradingAccount._id,
       symbol,
       side,
       orderType,
@@ -42,6 +68,14 @@ const createOrderController = async (req, res) => {
       message: "Order created successfully",
       data: {
         order,
+        tradingAccount: {
+          id: tradingAccount._id,
+          accountType: tradingAccount.accountType,
+          availableBalance: tradingAccount.availableBalance,
+          investedAmount: tradingAccount.investedAmount,
+          currency: tradingAccount.currency,
+          status: tradingAccount.status,
+        },
       },
     });
   } catch (error) {
@@ -56,12 +90,22 @@ const createOrderController = async (req, res) => {
 
 const getOrderController = async (req, res) => {
   try {
-    const order = await getOrderById(req.params.orderId);
+    const order = await getOrderById(
+      req.params.orderId,
+    );
 
     if (!order) {
       return res.status(404).json({
         success: false,
         message: "Order not found",
+      });
+    }
+
+    // Prevent access to another user's order
+    if (order.user.toString() !== req.userId.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: "You are not authorized to access this order",
       });
     }
 
@@ -84,15 +128,17 @@ const getOrderController = async (req, res) => {
 const getOrderHistoryController = async (req, res) => {
   try {
     const {
-      tradingAccountId,
       status,
       limit = 20,
       skip = 0,
     } = req.query;
 
+    const tradingAccount =
+      await getUserTradingAccount(req.userId);
+
     const result = await getOrderHistory({
       userId: req.userId,
-      tradingAccountId,
+      tradingAccountId: tradingAccount._id,
       status,
       limit: Number(limit),
       skip: Number(skip),
@@ -100,7 +146,17 @@ const getOrderHistoryController = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      data: result,
+      data: {
+        ...result,
+        tradingAccount: {
+          id: tradingAccount._id,
+          accountType: tradingAccount.accountType,
+          availableBalance: tradingAccount.availableBalance,
+          investedAmount: tradingAccount.investedAmount,
+          currency: tradingAccount.currency,
+          status: tradingAccount.status,
+        },
+      },
     });
   } catch (error) {
     console.error("Get order history error:", error);
@@ -111,9 +167,31 @@ const getOrderHistoryController = async (req, res) => {
     });
   }
 };
+
 const executeOrderController = async (req, res) => {
   try {
-    const result = await executeOrder(req.params.orderId);
+    const order = await getOrderById(
+      req.params.orderId,
+    );
+
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: "Order not found",
+      });
+    }
+
+    // Prevent executing another user's order
+    if (order.user.toString() !== req.userId.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: "You are not authorized to execute this order",
+      });
+    }
+
+    const result = await executeOrder(
+      req.params.orderId,
+    );
 
     return res.status(200).json({
       success: true,
@@ -132,13 +210,34 @@ const executeOrderController = async (req, res) => {
 
 const cancelOrderController = async (req, res) => {
   try {
-    const order = await cancelOrder(req.params.orderId);
+    const order = await getOrderById(
+      req.params.orderId,
+    );
+
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: "Order not found",
+      });
+    }
+
+    // Prevent cancelling another user's order
+    if (order.user.toString() !== req.userId.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: "You are not authorized to cancel this order",
+      });
+    }
+
+    const cancelledOrder = await cancelOrder(
+      req.params.orderId,
+    );
 
     return res.status(200).json({
       success: true,
       message: "Order cancelled successfully",
       data: {
-        order,
+        order: cancelledOrder,
       },
     });
   } catch (error) {
@@ -155,6 +254,6 @@ export {
   createOrderController,
   getOrderController,
   getOrderHistoryController,
-   executeOrderController,
+  executeOrderController,
   cancelOrderController,
 };

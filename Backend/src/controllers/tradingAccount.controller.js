@@ -3,6 +3,10 @@ import {
   getTradingAccount,
 } from "../services/tradingAccount.service.js";
 
+import {
+  syncInvestedAmount,
+} from "../services/accounts/tradingAccount.service.js";
+
 const createAccount = async (req, res) => {
   try {
     const result = await createTradingAccount(req.userId);
@@ -53,7 +57,41 @@ const getAccount = async (req, res) => {
   }
 };
 
+const syncAccount = async (req, res) => {
+  try {
+    const tradingAccount = await getTradingAccount(req.userId);
+
+    if (!tradingAccount) {
+      return res.status(404).json({
+        success: false,
+        message: "Trading account not found",
+      });
+    }
+
+    const syncedAccount = await syncInvestedAmount({
+      userId: req.userId,
+      tradingAccountId: tradingAccount._id,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Trading account synchronized successfully",
+      data: {
+        account: syncedAccount,
+      },
+    });
+  } catch (error) {
+    console.error("Sync trading account error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to synchronize trading account",
+    });
+  }
+};
+
 export {
   createAccount,
   getAccount,
-}; 
+  syncAccount,
+};

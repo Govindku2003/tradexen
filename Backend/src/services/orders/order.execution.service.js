@@ -3,7 +3,6 @@ import TradingAccount from "../../models/TradingAccount.js";
 
 import { executePaperTrade } from "../execution/paperTrading.engine.js";
 
-import { updateOrderStatus } from "./order.service.js";
 import { ORDER_STATUS } from "./order.status.js";
 
 import {
@@ -11,9 +10,14 @@ import {
   createPosition,
   updatePositionAfterBuy,
   closeOrReducePosition,
+  calculateInvestedAmount,
 } from "../positions/position.service.js";
 
 const executeOrder = async (orderId) => {
+  // --------------------------------------------------
+  // 1. FIND ORDER
+  // --------------------------------------------------
+
   const order = await Order.findById(orderId);
 
   if (!order) {
@@ -24,43 +28,36 @@ const executeOrder = async (orderId) => {
     throw new Error(`Order cannot be executed from status: ${order.status}`);
   }
 
-  const account = await TradingAccount.findById(order.tradingAccount);
+  // --------------------------------------------------
+  // 2. FIND USER'S ACTIVE TRADING ACCOUNT
+  // --------------------------------------------------
 
-  if (!account) {
-    throw new Error("Trading account not found");
-  }
-
-  const executionOrder = {
-    symbol: order.symbol,
-    side: order.side,
-    quantity: order.quantity,
-    price: order.requestedPrice,
-  };
-
-  const result = executePaperTrade({
-    account: {
-      availableBalance: account.availableBalance,
-    },
-    order: executionOrder,
+  const account = await TradingAccount.findOne({
+    _id: order.tradingAccount,
+    user: order.user,
+    status: "active",
   });
 
-  if (!result.executed) {
-    await updateOrderStatus(orderId, ORDER_STATUS.REJECTED);
-
-    throw new Error(result.reason || "Paper trade execution failed");
+  if (!account) {
+    throw new Error("Active trading account not found");
   }
 
-  // Update trading account balance
-  account.availableBalance = result.balance.newBalance;
-  await account.save();
-
-  const executedPrice = order.requestedPrice;
-
   // --------------------------------------------------
-  // POSITION INTEGRATION
+  // 3. EXECUTION PRICE
   // --------------------------------------------------
 
-  let position;
+  const executionPrice = order.requestedPrice;
+
+  if (typeof executionPrice !== "number" || executionPrice <= 0) {
+    order.status = ORDER_STATUS.REJECTED;
+    await order.save();
+
+    throw new Error("Valid execution price is required");
+  }
+
+  // --------------------------------------------------
+  // 4. FIND EXISTING OPEN POSITION
+  // --------------------------------------------------
 
   const existingPosition = await getOpenPosition({
     userId: order.user,
@@ -68,24 +65,75 @@ const executeOrder = async (orderId) => {
     symbol: order.symbol,
   });
 
+  // --------------------------------------------------
+  // 5. PREPARE PAPER EXECUTION ORDER
+  // --------------------------------------------------
+
+  const executionOrder = {
+    symbol: order.symbol,
+    side: order.side,
+    quantity: order.quantity,
+    price: executionPrice,
+  };
+
+  // --------------------------------------------------
+  // 6. PAPER EXECUTION
+  // --------------------------------------------------
+
+  const result = executePaperTrade({
+    account: {
+      availableBalance: account.availableBalance,
+    },
+    position: existingPosition
+      ? {
+          symbol: existingPosition.symbol,
+          quantity: existingPosition.quantity,
+          averagePrice: existingPosition.averageEntryPrice,
+          status: existingPosition.status,
+        }
+      : null,
+    order: executionOrder,
+  });
+
+  // --------------------------------------------------
+  // 7. EXECUTION FAILED
+  // --------------------------------------------------
+
+  if (!result.executed) {
+    order.status = ORDER_STATUS.REJECTED;
+    await order.save();
+
+    throw new Error(result.reason || "Paper trade execution failed");
+  }
+
+  // --------------------------------------------------
+  // 8. UPDATE ACCOUNT BALANCE
+  // --------------------------------------------------
+
+  account.availableBalance = result.balance.newBalance;
+
+  // --------------------------------------------------
+  // 9. UPDATE POSITION DATABASE
+  // --------------------------------------------------
+
+  let position;
+
   if (order.side === "BUY") {
     if (existingPosition) {
-      // Add quantity to existing LONG position
       position = await updatePositionAfterBuy({
         positionId: existingPosition._id,
         quantity: order.quantity,
-        entryPrice: executedPrice,
+        entryPrice: executionPrice,
       });
     } else {
-      // Create new LONG position
       position = await createPosition({
         userId: order.user,
         tradingAccountId: order.tradingAccount,
         symbol: order.symbol,
         side: "LONG",
         quantity: order.quantity,
-        entryPrice: executedPrice,
-        currentPrice: executedPrice,
+        entryPrice: executionPrice,
+        currentPrice: executionPrice,
         stopLoss: order.stopLoss,
         takeProfit: order.takeProfit,
       });
@@ -97,25 +145,41 @@ const executeOrder = async (orderId) => {
       throw new Error(`No open position exists for ${order.symbol}`);
     }
 
-    // Reduce or close existing position
     const positionResult = await closeOrReducePosition({
       positionId: existingPosition._id,
       quantity: order.quantity,
-      exitPrice: executedPrice,
+      exitPrice: executionPrice,
     });
 
     position = positionResult.position;
   }
 
   // --------------------------------------------------
-  // ORDER UPDATE
+  // 10. RECALCULATE INVESTED AMOUNT
+  // --------------------------------------------------
+  // Invested amount represents the current cost basis
+  // of open positions.
+
+  account.investedAmount = await calculateInvestedAmount({
+    userId: order.user,
+    tradingAccountId: order.tradingAccount,
+  });
+
+  await account.save();
+
+  // --------------------------------------------------
+  // 11. UPDATE ORDER
   // --------------------------------------------------
 
-  order.executedPrice = executedPrice;
+  order.executedPrice = executionPrice;
   order.status = ORDER_STATUS.FILLED;
   order.executedAt = new Date();
 
   await order.save();
+
+  // --------------------------------------------------
+  // 12. RETURN RESULT
+  // --------------------------------------------------
 
   return {
     order,
@@ -123,6 +187,13 @@ const executeOrder = async (orderId) => {
     balance: result.balance,
     position,
     trade: result.trade,
+    tradingAccount: {
+      id: account._id,
+      availableBalance: account.availableBalance,
+      investedAmount: account.investedAmount,
+      currency: account.currency,
+      status: account.status,
+    },
   };
 };
 

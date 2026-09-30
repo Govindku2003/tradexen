@@ -193,6 +193,35 @@ const closeOrReducePosition = async ({ positionId, quantity, exitPrice }) => {
   };
 };
 
+const calculateInvestedAmount = async ({
+  userId,
+  tradingAccountId,
+}) => {
+  if (!userId) {
+    throw new Error("User ID is required");
+  }
+
+  if (!tradingAccountId) {
+    throw new Error("Trading account ID is required");
+  }
+
+  const openPositions = await Position.find({
+    user: userId,
+    tradingAccount: tradingAccountId,
+    status: "OPEN",
+  });
+
+  const investedAmount = openPositions.reduce(
+    (total, position) =>
+      total + position.quantity * position.averageEntryPrice,
+    0,
+  );
+
+  return investedAmount;
+};
+
+
+
 const calculateUnrealizedPnL = async ({ positionId, currentPrice }) => {
   if (typeof currentPrice !== "number" || currentPrice <= 0) {
     throw new Error("Current price must be positive");
@@ -233,4 +262,5 @@ export {
   createPosition,
   updatePositionAfterBuy,
   closeOrReducePosition,
+  calculateInvestedAmount,
 };
