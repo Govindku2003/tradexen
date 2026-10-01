@@ -1,5 +1,8 @@
 import createMarketDataProvider from "./marketDataFactory.js";
-import { normalizeMarketQuote } from "./marketDataNormalizer.js";
+import {
+  normalizeMarketQuote,
+  normalizeHistoricalCandles,
+} from "./marketDataNormalizer.js";
 
 const getMarketQuote = async (instrumentKey) => {
   const provider = createMarketDataProvider();
@@ -9,10 +12,18 @@ const getMarketQuote = async (instrumentKey) => {
   return normalizeMarketQuote(rawQuote, instrumentKey);
 };
 
-const getHistoricalData = async (symbol, interval, from, to) => {
+const getHistoricalData = async (instrumentKey, unit, interval, from, to) => {
   const provider = createMarketDataProvider();
 
-  return provider.getHistoricalData(symbol, interval, from, to);
+  const rawHistoricalData = await provider.getHistoricalData(
+    instrumentKey,
+    unit,
+    interval,
+    from,
+    to,
+  );
+
+  return normalizeHistoricalCandles(rawHistoricalData, instrumentKey);
 };
 
 const connectMarketDataWebSocket = async () => {

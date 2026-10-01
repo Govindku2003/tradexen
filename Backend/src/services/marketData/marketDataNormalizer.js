@@ -6,8 +6,11 @@ const normalizeMarketQuote = (rawResponse, instrumentKey) => {
   const responseKey = Object.keys(rawResponse?.data || {})[0];
 
   const marketData = responseKey ? rawResponse.data[responseKey] : null;
+
   if (!marketData) {
-    throw new Error(`Market data not found for instrument: ${instrumentKey}`);
+    throw new Error(
+      `Market data not found for instrument: ${instrumentKey}`,
+    );
   }
 
   const normalizedData = {
@@ -25,10 +28,60 @@ const normalizeMarketQuote = (rawResponse, instrumentKey) => {
 
     volume: marketData.volume ?? marketData.ohlc?.volume ?? null,
 
-    timestamp: marketData.timestamp || new Date().toISOString(),
+    timestamp:
+      marketData.timestamp || new Date().toISOString(),
   };
 
   return normalizedData;
 };
 
-export { normalizeMarketQuote };
+
+const normalizeHistoricalCandles = (
+  rawResponse,
+  instrumentKey,
+) => {
+  if (!rawResponse) {
+    throw new Error("Historical market data response is empty");
+  }
+
+  const candles = rawResponse?.data?.candles;
+
+  if (!Array.isArray(candles)) {
+    throw new Error(
+      `Historical candles not found for instrument: ${instrumentKey}`,
+    );
+  }
+
+  return candles.map((candle) => {
+    if (!Array.isArray(candle) || candle.length < 6) {
+      throw new Error(
+        `Invalid historical candle received for instrument: ${instrumentKey}`,
+      );
+    }
+
+    const [
+      timestamp,
+      open,
+      high,
+      low,
+      close,
+      volume,
+    ] = candle;
+
+    return {
+      instrumentKey,
+      timestamp,
+      open: open ?? null,
+      high: high ?? null,
+      low: low ?? null,
+      close: close ?? null,
+      volume: volume ?? null,
+    };
+  });
+};
+
+
+export {
+  normalizeMarketQuote,
+  normalizeHistoricalCandles,
+};
