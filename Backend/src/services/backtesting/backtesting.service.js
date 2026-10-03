@@ -1,460 +1,1019 @@
+import mongoose from "mongoose";
+
+import Backtest from "../../models/Backtest.js";
+import Strategy from "../../models/Strategy.js";
+
 import { getHistoricalData } from "../marketData/marketData.service.js";
 import { calculateIndicatorSeries } from "../indicators/indicator.service.js";
 import { runStrategies } from "../strategies/strategy.engine.js";
-import strategyManager from "../strategies/strategy.manager.js";
 
-const DEFAULT_INITIAL_CAPITAL = 100000;
+const STRATEGY_NAME_MAP = {
+  EMA_CROSSOVER: "Moving Average Strategy",
+  "moving-average": "Moving Average Strategy",
 
-const toNumber = (value) => {
-  const number = Number(value);
+  RSI: "RSI Strategy",
+  rsi: "RSI Strategy",
 
-  return Number.isFinite(number) ? number : null;
+  MACD: "MACD Strategy",
+  macd: "MACD Strategy",
 };
 
-const normalizeCandles = (candles = []) => {
-  return [...candles]
-    .map((candle) => ({
-      instrumentKey: candle.instrumentKey,
-      timestamp: candle.timestamp,
-      open: toNumber(candle.open),
-      high: toNumber(candle.high),
-      low: toNumber(candle.low),
-      close: toNumber(candle.close),
-      volume: toNumber(candle.volume),
-    }))
-    .filter((candle) => candle.timestamp && candle.close !== null)
-    .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-};
+const normalizeDate = (value) => {
+  const date = new Date(value);
 
-const calculateDrawdown = (equity, peakEquity) => {
-  if (peakEquity <= 0) {
-    return 0;
+  if (Number.isNaN(date.getTime())) {
+    throw new Error(`Invalid date: ${value}`);
   }
 
-  return ((peakEquity - equity) / peakEquity) * 100;
+  return date;
+};
+
+const getSelectedStrategy = async ({
+  userId,
+  strategyKey,
+}) => {
+  if (
+    !strategyKey ||
+    strategyKey === "all" ||
+    strategyKey === "ALL"
+  ) {
+    return null;
+  }
+
+  if (mongoose.Types.ObjectId.isValid(strategyKey)) {
+    const strategy = await Strategy.findOne({
+      _id: strategyKey,
+      user: userId,
+    }).lean();
+
+    if (!strategy) {
+      throw new Error("Selected strategy not found");
+    }
+
+    return strategy;
+  }
+
+  const strategyName =
+    STRATEGY_NAME_MAP[strategyKey];
+
+  if (!strategyName) {
+    throw new Error(
+      `Unsupported strategy: ${strategyKey}`,
+    );
+  }
+
+  const strategy = await Strategy.findOne({
+    user: userId,
+    name: strategyName,
+  }).lean();
+
+  return strategy || null;
+};
+
+const getStrategySignal = ({
+  strategyKey,
+  strategies,
+  decision,
+}) => {
+  if (
+    !strategyKey ||
+    strategyKey === "all" ||
+    strategyKey === "ALL"
+  ) {
+    return decision?.finalSignal || "HOLD";
+  }
+
+  const targetName =
+    STRATEGY_NAME_MAP[strategyKey];
+
+  const selected = strategies.find(
+    (item) =>
+      item.strategy === targetName,
+  );
+
+  return selected?.signal || "HOLD";
+};
+
+const getStrategyReason = ({
+  strategyKey,
+  strategies,
+  decision,
+}) => {
+  if (
+    !strategyKey ||
+    strategyKey === "all" ||
+    strategyKey === "ALL"
+  ) {
+    return (
+      decision?.reason ||
+      "Combined strategy decision"
+    );
+  }
+
+  const targetName =
+    STRATEGY_NAME_MAP[strategyKey];
+
+  const selected = strategies.find(
+    (item) =>
+      item.strategy === targetName,
+  );
+
+  return (
+    selected?.reason ||
+    "Strategy signal generated"
+  );
 };
 
 const runBacktest = async ({
+  userId,
+
   instrumentKey,
+
   unit = "days",
   interval = "1",
+
   from,
   to,
-  initialCapital = DEFAULT_INITIAL_CAPITAL,
+
+  initialCapital,
   quantity = 1,
+
   strategyKey = "all",
 
   smaPeriod = 20,
   emaPeriod = 20,
   rsiPeriod = 14,
+
   macdFastPeriod = 12,
   macdSlowPeriod = 26,
   macdSignalPeriod = 9,
 }) => {
-  if (!instrumentKey) {
-    throw new Error("instrumentKey is required");
-  }
-
-  if (!from || !to) {
-    throw new Error("from and to dates are required");
-  }
-
-  const startingCapital = toNumber(initialCapital) ?? DEFAULT_INITIAL_CAPITAL;
-
-  const tradeQuantity = toNumber(quantity) ?? 1;
-
-  if (startingCapital <= 0) {
-    throw new Error("initialCapital must be greater than 0");
-  }
-
-  if (tradeQuantity <= 0) {
-    throw new Error("quantity must be greater than 0");
-  }
-
-  /*
-   * 1. Fetch REAL historical market data.
-   */
-  const historicalResponse = await getHistoricalData(
-    instrumentKey,
-    unit,
-    interval,
-    from,
-    to,
-  );
-
-  const rawCandles =
-    historicalResponse?.data ??
-    historicalResponse?.candles ??
-    historicalResponse;
-
-  const candles = normalizeCandles(rawCandles);
-
-  if (candles.length < 2) {
-    throw new Error("Not enough historical candles for backtesting");
-  }
-
-  /*
-   * 2. Extract chronological close prices.
-   */
-  const prices = candles.map((candle) => candle.close);
-
-  /*
-   * 3. Calculate indicator series for
-   *    every historical candle.
-   */
-  const indicatorSeries = calculateIndicatorSeries(prices, {
-    smaPeriod,
-    emaPeriod,
-    rsiPeriod,
-    macdFastPeriod,
-    macdSlowPeriod,
-    macdSignalPeriod,
-  });
-
-  let cash = startingCapital;
-
-  let position = null;
-
-  const trades = [];
-
-  const equityCurve = [];
-
-  let peakEquity = startingCapital;
-
-  let maxDrawdown = 0;
-
-  /*
-   * Keep the latest strategy result.
-   *
-   * This is useful when an open position
-   * is closed automatically on the final
-   * candle.
-   */
-  let lastStrategyResult = null;
-
-  /*
-   * 4. Walk through historical candles
-   *    one by one.
-   */
-  for (let index = 0; index < candles.length; index += 1) {
-    const candle = candles[index];
-
-    /*
-     * Indicator snapshot for
-     * current candle.
-     */
-    const indicators = {
-      sma: indicatorSeries.sma[index] ?? null,
-
-      ema: indicatorSeries.ema[index] ?? null,
-
-      fastEMA: indicatorSeries.fastEMA[index] ?? null,
-
-      slowEMA: indicatorSeries.slowEMA[index] ?? null,
-
-      rsi: indicatorSeries.rsi[index] ?? null,
-
-      macd: indicatorSeries.macd[index] ?? null,
-    };
-    /*
-     * Market snapshot expected by
-     * existing strategy engine.
-     */
-    const marketData = {
-      instrumentKey,
-      price: candle.close,
-      timestamp: candle.timestamp,
-      candle,
-    };
-
-    /*
-     * 5. Run EXISTING TradeXen
-     *    strategy engine.
-     */
-   let strategyResult;
-
-if (strategyKey === "all") {
-  strategyResult = runStrategies(
-    marketData,
-    indicators
-  );
-} else {
-  const selectedStrategy =
-    strategyManager.generateSignal(
-      strategyKey,
-      marketData,
-      indicators
+  if (!userId) {
+    throw new Error(
+      "User authentication is required",
     );
+  }
 
-  strategyResult = {
-    strategies: [selectedStrategy],
-    decision: {
-      finalSignal: selectedStrategy.signal,
-      counts: {
-        BUY:
-          selectedStrategy.signal === "BUY"
-            ? 1
-            : 0,
-        SELL:
-          selectedStrategy.signal === "SELL"
-            ? 1
-            : 0,
-        HOLD:
-          selectedStrategy.signal === "HOLD"
-            ? 1
-            : 0,
+  if (!instrumentKey) {
+    throw new Error(
+      "Instrument key is required",
+    );
+  }
+
+  const startDate = normalizeDate(from);
+  const endDate = normalizeDate(to);
+
+  if (startDate >= endDate) {
+    throw new Error(
+      "From date must be before To date",
+    );
+  }
+
+  const capital = Number(initialCapital);
+  const tradeQuantity = Number(quantity);
+
+  if (
+    !Number.isFinite(capital) ||
+    capital <= 0
+  ) {
+    throw new Error(
+      "Initial capital must be greater than zero",
+    );
+  }
+
+  if (
+    !Number.isFinite(tradeQuantity) ||
+    tradeQuantity <= 0
+  ) {
+    throw new Error(
+      "Quantity must be greater than zero",
+    );
+  }
+
+  const selectedStrategy =
+    await getSelectedStrategy({
+      userId,
+      strategyKey,
+    });
+
+  const strategyId =
+    selectedStrategy?._id ?? null;
+
+  const symbol =
+    instrumentKey.includes("|")
+      ? instrumentKey.split("|").pop()
+      : instrumentKey;
+
+  let backtest;
+
+  try {
+    backtest = await Backtest.create({
+      user: userId,
+
+      strategy: strategyId,
+
+      strategyKey:
+        strategyKey || "all",
+
+      name: `Backtest - ${symbol}`,
+
+      symbol: symbol.toUpperCase(),
+
+      instrumentKey,
+
+      exchange: "NSE",
+
+      unit,
+      interval,
+
+      startDate,
+      endDate,
+
+      initialCapital: capital,
+
+      finalCapital: capital,
+
+      totalReturn: 0,
+
+      totalReturnPercent: 0,
+
+      totalTrades: 0,
+
+      winningTrades: 0,
+
+      losingTrades: 0,
+
+      winRate: 0,
+
+      maxDrawdown: 0,
+
+      quantity: tradeQuantity,
+
+      configuration: {
+        strategyKey:
+          strategyKey || "all",
+
+        smaPeriod:
+          Number(smaPeriod),
+
+        emaPeriod:
+          Number(emaPeriod),
+
+        rsiPeriod:
+          Number(rsiPeriod),
+
+        macdFastPeriod:
+          Number(macdFastPeriod),
+
+        macdSlowPeriod:
+          Number(macdSlowPeriod),
+
+        macdSignalPeriod:
+          Number(macdSignalPeriod),
       },
-      hasConflict: false,
-      validResults: [selectedStrategy],
-      totalStrategies: 1,
-    },
-  };
-}
-    /*
-     * Preserve the latest strategy
-     * decision for forced exit.
-     */
-    lastStrategyResult = strategyResult;
 
-    const decision = strategyResult?.decision;
+      trades: [],
 
-    /*
-     * signal.validator.js may expose
-     * its result differently, therefore
-     * support the existing common fields.
-     */
-    const signal =
-      decision?.signal ?? decision?.decision ?? decision?.finalSignal ?? "HOLD";
+      equityCurve: [],
+
+      candlesProcessed: 0,
+
+      status: "RUNNING",
+
+      errorMessage: null,
+
+      completedAt: null,
+    });
 
     /*
-     * 6. BUY
-     *
-     * LONG-only paper simulation.
+     * Historical market data
      */
-    if (signal === "BUY" && !position) {
-      const cost = candle.close * tradeQuantity;
+    const candles =
+      await getHistoricalData(
+        instrumentKey,
+        unit,
+        interval,
+        from,
+        to,
+      );
 
-      if (cost <= cash) {
-        position = {
-          side: "LONG",
-
-          quantity: tradeQuantity,
-
-          entryPrice: candle.close,
-
-          entryTime: candle.timestamp,
-
-          entryIndex: index,
-
-          entrySignal: signal,
-
-          entryStrategies: strategyResult?.strategies ?? [],
-        };
-
-        cash -= cost;
-      }
+    if (
+      !Array.isArray(candles) ||
+      candles.length === 0
+    ) {
+      throw new Error(
+        "No historical market data available for the selected period",
+      );
     }
 
     /*
-     * 7. SELL
-     *
-     * SELL closes the existing LONG
-     * position.
+     * Historical API data is normally
+     * newest first.
      */
-    if (signal === "SELL" && position) {
-      const exitPrice = candle.close;
+    const chronological =
+      [...candles].reverse();
 
-      const proceeds = exitPrice * position.quantity;
+    const prices =
+      chronological.map((candle) =>
+        Number(candle.close),
+      );
 
-      cash += proceeds;
+    /*
+     * Calculate indicators once.
+     */
+    const indicators =
+      calculateIndicatorSeries(
+        prices,
+        {
+          smaPeriod:
+            Number(smaPeriod),
 
-      const pnl = (exitPrice - position.entryPrice) * position.quantity;
+          emaPeriod:
+            Number(emaPeriod),
 
-      const investedCapital = position.entryPrice * position.quantity;
+          fastEMAPeriod: 9,
 
-      const returnPercent =
-        investedCapital > 0 ? (pnl / investedCapital) * 100 : 0;
+          slowEMAPeriod: 21,
+
+          rsiPeriod:
+            Number(rsiPeriod),
+
+          macdFastPeriod:
+            Number(macdFastPeriod),
+
+          macdSlowPeriod:
+            Number(macdSlowPeriod),
+
+          macdSignalPeriod:
+            Number(macdSignalPeriod),
+        },
+      );
+
+    /*
+     * Virtual portfolio
+     */
+    let cash = capital;
+
+    let positionQuantity = 0;
+
+    let positionEntryPrice = 0;
+
+    let positionEntryTime = null;
+
+    let positionEntryReason = "";
+
+    let realizedPnL = 0;
+
+    let peakEquity = capital;
+
+    let maxDrawdownPercent = 0;
+
+    /*
+     * Completed trades only.
+     *
+     * BUY + SELL becomes one trade.
+     */
+    const trades = [];
+
+    const equityCurve = [];
+
+    /*
+     * Process candles chronologically.
+     */
+    for (
+      let index = 0;
+      index < chronological.length;
+      index += 1
+    ) {
+      const candle =
+        chronological[index];
+
+      const price =
+        Number(candle.close);
+
+      if (
+        !Number.isFinite(price) ||
+        price <= 0
+      ) {
+        continue;
+      }
+
+      const latestIndicators = {
+        sma:
+          indicators.sma?.[index] ??
+          null,
+
+        ema:
+          indicators.ema?.[index] ??
+          null,
+
+        fastEMA:
+          indicators.fastEMA?.[index] ??
+          null,
+
+        slowEMA:
+          indicators.slowEMA?.[index] ??
+          null,
+
+        rsi:
+          indicators.rsi?.[index] ??
+          null,
+
+        macd:
+          indicators.macd?.[index] ??
+          null,
+      };
+
+      const marketData = {
+        instrumentKey,
+
+        price,
+
+        timestamp:
+          candle.timestamp,
+
+        candle,
+      };
+
+      const strategyResult =
+        runStrategies(
+          marketData,
+          latestIndicators,
+        );
+
+      const signal =
+        getStrategySignal({
+          strategyKey:
+            strategyKey || "all",
+
+          strategies:
+            strategyResult?.strategies ||
+            [],
+
+          decision:
+            strategyResult?.decision,
+        });
+
+      const reason =
+        getStrategyReason({
+          strategyKey:
+            strategyKey || "all",
+
+          strategies:
+            strategyResult?.strategies ||
+            [],
+
+          decision:
+            strategyResult?.decision,
+        });
+
+      /*
+       * BUY
+       */
+      if (
+        signal === "BUY" &&
+        positionQuantity === 0
+      ) {
+        const requiredCapital =
+          price * tradeQuantity;
+
+        if (
+          requiredCapital <= cash
+        ) {
+          cash -= requiredCapital;
+
+          positionQuantity =
+            tradeQuantity;
+
+          positionEntryPrice =
+            price;
+
+          positionEntryTime =
+            candle.timestamp;
+
+          positionEntryReason =
+            reason;
+        }
+      }
+
+      /*
+       * SELL
+       *
+       * Convert the open BUY position
+       * into one completed trade.
+       */
+      if (
+        signal === "SELL" &&
+        positionQuantity > 0
+      ) {
+        const sellQuantity =
+          Math.min(
+            tradeQuantity,
+            positionQuantity,
+          );
+
+        const entryPrice =
+          positionEntryPrice;
+
+        const exitPrice =
+          price;
+
+        const entryValue =
+          entryPrice * sellQuantity;
+
+        const exitValue =
+          exitPrice * sellQuantity;
+
+        const tradePnL =
+          exitValue -
+          entryValue;
+
+        const tradeReturnPercent =
+          entryValue > 0
+            ? (tradePnL /
+                entryValue) *
+              100
+            : 0;
+
+        cash += exitValue;
+
+        positionQuantity -=
+          sellQuantity;
+
+        realizedPnL +=
+          tradePnL;
+
+        trades.push({
+          side: "LONG",
+
+          quantity:
+            sellQuantity,
+
+          entryPrice,
+
+          exitPrice,
+
+          entryTime:
+            positionEntryTime,
+
+          exitTime:
+            candle.timestamp,
+
+          pnl: tradePnL,
+
+          returnPercent:
+            tradeReturnPercent,
+
+          signal,
+
+          entryReason:
+            positionEntryReason,
+
+          exitReason:
+            reason ||
+            "SELL signal",
+        });
+
+        if (
+          positionQuantity === 0
+        ) {
+          positionEntryPrice = 0;
+          positionEntryTime = null;
+          positionEntryReason = "";
+        }
+      }
+
+      /*
+       * Mark-to-market equity
+       */
+      const positionValue =
+        positionQuantity *
+        price;
+
+      const equity =
+        cash + positionValue;
+
+      if (
+        equity > peakEquity
+      ) {
+        peakEquity = equity;
+      }
+
+      /*
+       * Correct percentage drawdown.
+       *
+       * Example:
+       * Peak = 100000
+       * Current = 99950
+       * Drawdown = 0.05%
+       */
+      const drawdownPercent =
+        peakEquity > 0
+          ? ((peakEquity - equity) /
+              peakEquity) *
+            100
+          : 0;
+
+      if (
+        drawdownPercent >
+        maxDrawdownPercent
+      ) {
+        maxDrawdownPercent =
+          drawdownPercent;
+      }
+
+      equityCurve.push({
+        timestamp:
+          candle.timestamp,
+
+        price,
+
+        cash,
+
+        positionQuantity,
+
+        positionValue,
+
+        equity,
+
+        drawdownPercent,
+      });
+    }
+
+    /*
+     * Force close final position.
+     *
+     * This creates a proper completed
+     * LONG trade instead of a raw SELL leg.
+     */
+    if (
+      positionQuantity > 0
+    ) {
+      const finalCandle =
+        chronological[
+          chronological.length - 1
+        ];
+
+      const finalPrice =
+        Number(
+          finalCandle.close,
+        );
+
+      const entryPrice =
+        positionEntryPrice;
+
+      const exitPrice =
+        finalPrice;
+
+      const entryValue =
+        entryPrice *
+        positionQuantity;
+
+      const exitValue =
+        exitPrice *
+        positionQuantity;
+
+      const tradePnL =
+        exitValue -
+        entryValue;
+
+      const tradeReturnPercent =
+        entryValue > 0
+          ? (tradePnL /
+              entryValue) *
+            100
+          : 0;
+
+      cash += exitValue;
+
+      realizedPnL +=
+        tradePnL;
 
       trades.push({
         side: "LONG",
 
-        quantity: position.quantity,
+        quantity:
+          positionQuantity,
 
-        entryPrice: position.entryPrice,
+        entryPrice,
 
         exitPrice,
 
-        entryTime: position.entryTime,
+        entryTime:
+          positionEntryTime,
 
-        exitTime: candle.timestamp,
+        exitTime:
+          finalCandle.timestamp,
 
-        pnl,
+        pnl: tradePnL,
 
-        returnPercent,
+        returnPercent:
+          tradeReturnPercent,
 
-        entrySignal: position.entrySignal,
+        signal: "SELL",
 
-        exitSignal: signal,
+        entryReason:
+          positionEntryReason,
 
-        strategies: strategyResult?.strategies ?? [],
-
-        entryStrategies: position.entryStrategies ?? [],
-
-        decision: strategyResult?.decision ?? null,
+        exitReason:
+          "Backtest final position close",
       });
 
-      position = null;
+      positionQuantity = 0;
+
+      positionEntryPrice = 0;
+
+      positionEntryTime = null;
+
+      positionEntryReason = "";
     }
 
     /*
-     * 8. Mark-to-market equity.
+     * Final portfolio value
      */
-    let equity = cash;
+    const finalCapital =
+      Number(cash);
 
-    if (position) {
-      equity += position.quantity * candle.close;
+    const totalReturn =
+      finalCapital - capital;
+
+    const totalReturnPercent =
+      capital > 0
+        ? (totalReturn / capital) *
+          100
+        : 0;
+
+    /*
+     * Completed trade statistics
+     */
+    const totalTrades =
+      trades.length;
+
+    const winningTrades =
+      trades.filter(
+        (trade) =>
+          Number(trade.pnl || 0) > 0,
+      ).length;
+
+    const losingTrades =
+      trades.filter(
+        (trade) =>
+          Number(trade.pnl || 0) < 0,
+      ).length;
+
+    const winRate =
+      totalTrades > 0
+        ? (winningTrades /
+            totalTrades) *
+          100
+        : 0;
+
+    /*
+     * Update database
+     */
+    backtest.finalCapital =
+      finalCapital;
+
+    backtest.totalReturn =
+      totalReturn;
+
+    backtest.totalReturnPercent =
+      totalReturnPercent;
+
+    backtest.totalTrades =
+      totalTrades;
+
+    backtest.winningTrades =
+      winningTrades;
+
+    backtest.losingTrades =
+      losingTrades;
+
+    backtest.winRate =
+      winRate;
+
+    backtest.maxDrawdown =
+      maxDrawdownPercent;
+
+    backtest.trades =
+      trades;
+
+    backtest.equityCurve =
+      equityCurve;
+
+    backtest.candlesProcessed =
+      chronological.length;
+
+    backtest.status =
+      "COMPLETED";
+
+    backtest.errorMessage =
+      null;
+
+    backtest.completedAt =
+      new Date();
+
+    await backtest.save();
+
+    /*
+     * Frontend-compatible response
+     */
+    return {
+      configuration: {
+        instrumentKey,
+
+        unit,
+
+        interval,
+
+        from,
+
+        to,
+
+        initialCapital:
+          capital,
+
+        quantity:
+          tradeQuantity,
+
+        strategy:
+          strategyKey || "all",
+
+        smaPeriod:
+          Number(smaPeriod),
+
+        emaPeriod:
+          Number(emaPeriod),
+
+        rsiPeriod:
+          Number(rsiPeriod),
+
+        macdFastPeriod:
+          Number(macdFastPeriod),
+
+        macdSlowPeriod:
+          Number(macdSlowPeriod),
+
+        macdSignalPeriod:
+          Number(macdSignalPeriod),
+      },
+
+      candlesProcessed:
+        chronological.length,
+
+      summary: {
+        initialCapital:
+          capital,
+
+        finalEquity:
+          finalCapital,
+
+        finalCapital,
+
+        totalPnL:
+          totalReturn,
+
+        totalReturn,
+
+        returnPercent:
+          totalReturnPercent,
+
+        totalReturnPercent,
+
+        totalTrades,
+
+        winningTrades,
+
+        losingTrades,
+
+        winRate,
+
+        maxDrawdown:
+          maxDrawdownPercent,
+
+        strategy:
+          strategyKey || "all",
+      },
+
+      trades,
+
+      equityCurve,
+
+      backtest,
+    };
+  } catch (error) {
+    if (backtest) {
+      backtest.status =
+        "FAILED";
+
+      backtest.errorMessage =
+        error.message;
+
+      backtest.completedAt =
+        new Date();
+
+      await backtest.save();
     }
 
-    peakEquity = Math.max(peakEquity, equity);
-
-    const drawdown = calculateDrawdown(equity, peakEquity);
-
-    maxDrawdown = Math.max(maxDrawdown, drawdown);
-
-    equityCurve.push({
-      timestamp: candle.timestamp,
-
-      equity,
-
-      drawdown,
-    });
+    throw error;
   }
+};
 
-  /*
-   * 9. Close any open position
-   *    at final historical candle.
-   */
-  if (position) {
-    const finalCandle = candles[candles.length - 1];
+const getBacktestHistory = async ({
+  userId,
+  limit = 20,
+  skip = 0,
+}) => {
+  const safeLimit = Math.min(
+    Math.max(
+      Number(limit) || 20,
+      1,
+    ),
+    100,
+  );
 
-    const exitPrice = finalCandle.close;
+  const safeSkip = Math.max(
+    Number(skip) || 0,
+    0,
+  );
 
-    const proceeds = exitPrice * position.quantity;
+  const query = {
+    user: userId,
+  };
 
-    cash += proceeds;
+  const [
+    backtests,
+    total,
+  ] = await Promise.all([
+    Backtest.find(query)
+      .populate(
+        "strategy",
+        "name strategyType",
+      )
+      .sort({
+        createdAt: -1,
+      })
+      .skip(safeSkip)
+      .limit(safeLimit)
+      .lean(),
 
-    const pnl = (exitPrice - position.entryPrice) * position.quantity;
-
-    const investedCapital = position.entryPrice * position.quantity;
-
-    const returnPercent =
-      investedCapital > 0 ? (pnl / investedCapital) * 100 : 0;
-
-    trades.push({
-      side: "LONG",
-
-      quantity: position.quantity,
-
-      entryPrice: position.entryPrice,
-
-      exitPrice,
-
-      entryTime: position.entryTime,
-
-      exitTime: finalCandle.timestamp,
-
-      pnl,
-
-      returnPercent,
-
-      entrySignal: position.entrySignal,
-
-      exitSignal: "FORCED_EXIT",
-
-      /*
-       * Preserve the strategy state
-       * from the final candle instead
-       * of returning an empty array.
-       */
-      strategies: lastStrategyResult?.strategies ?? [],
-
-      entryStrategies: position.entryStrategies ?? [],
-
-      decision: lastStrategyResult?.decision ?? null,
-    });
-
-    position = null;
-  }
-
-  /*
-   * 10. Final statistics.
-   */
-  const finalEquity = cash;
-
-  const totalPnL = finalEquity - startingCapital;
-
-  const returnPercent =
-    startingCapital > 0 ? (totalPnL / startingCapital) * 100 : 0;
-
-  const winningTrades = trades.filter((trade) => trade.pnl > 0);
-
-  const losingTrades = trades.filter((trade) => trade.pnl < 0);
-
-  const winRate =
-    trades.length > 0 ? (winningTrades.length / trades.length) * 100 : 0;
+    Backtest.countDocuments(
+      query,
+    ),
+  ]);
 
   return {
-    summary: {
-      initialCapital: startingCapital,
+    backtests,
 
-      finalEquity,
+    pagination: {
+      total,
 
-      totalPnL,
+      limit:
+        safeLimit,
 
-      returnPercent,
+      skip:
+        safeSkip,
 
-      totalTrades: trades.length,
-
-      winningTrades: winningTrades.length,
-
-      losingTrades: losingTrades.length,
-
-      winRate,
-
-      maxDrawdown,
+      hasMore:
+        safeSkip +
+          backtests.length <
+        total,
     },
-
-    configuration: {
-      instrumentKey,
-
-      unit,
-
-      interval,
-
-      from,
-
-      to,
-
-      quantity: tradeQuantity,
-
-      strategyKey,  
-
-      indicators: {
-        smaPeriod,
-        emaPeriod,
-        rsiPeriod,
-        macdFastPeriod,
-        macdSlowPeriod,
-        macdSignalPeriod,
-      },
-    },
-
-    trades,
-
-    equityCurve,
-
-    candlesProcessed: candles.length,
   };
 };
 
-export { runBacktest };
+const getBacktestById = async ({
+  backtestId,
+  userId,
+}) => {
+  if (!backtestId) {
+    throw new Error(
+      "Backtest ID is required",
+    );
+  }
+
+  const backtest =
+    await Backtest.findOne({
+      _id: backtestId,
+      user: userId,
+    })
+      .populate(
+        "strategy",
+        "name strategyType",
+      )
+      .lean();
+
+  if (!backtest) {
+    throw new Error(
+      "Backtest not found",
+    );
+  }
+
+  return backtest;
+};
+
+export {
+  runBacktest,
+  getBacktestHistory,
+  getBacktestById,
+};

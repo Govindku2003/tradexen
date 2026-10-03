@@ -1,29 +1,36 @@
-const API_BASE_URL =
-  import.meta.env.VITE_API_URL ||
-  "http://localhost:5000";
+import apiRequest from "./apiClient";
 
 const runBacktest = async (payload) => {
-  const response = await fetch(
-    `${API_BASE_URL}/api/backtesting/run`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    }
-  );
+  const response = await apiRequest("/backtesting/run", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 
-  const result = await response.json();
-
-  if (!response.ok || !result.success) {
-    throw new Error(
-      result.message ||
-        "Failed to run backtest"
-    );
-  }
-
-  return result.data;
+  return response?.data;
 };
 
-export { runBacktest };
+const getBacktests = async ({
+  limit = 20,
+  skip = 0,
+} = {}) => {
+  const params = new URLSearchParams();
+
+  params.set("limit", String(limit));
+  params.set("skip", String(skip));
+
+  return apiRequest(`/backtesting?${params.toString()}`);
+};
+
+const getBacktest = async (backtestId) => {
+  if (!backtestId) {
+    throw new Error("Backtest ID is required");
+  }
+
+  return apiRequest(`/backtesting/${backtestId}`);
+};
+
+export {
+  runBacktest,
+  getBacktests,
+  getBacktest,
+};

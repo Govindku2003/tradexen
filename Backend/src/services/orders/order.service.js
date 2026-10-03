@@ -1,6 +1,13 @@
 import Order from "../../models/Order.js";
-import { validateOrderData } from "./order.validation.js";
-import { ORDER_STATUS, ORDER_STATUS_TRANSITIONS } from "./order.status.js";
+
+import {
+  validateOrderData,
+} from "./order.validation.js";
+
+import {
+  ORDER_STATUS,
+  ORDER_STATUS_TRANSITIONS,
+} from "./order.status.js";
 
 const createOrder = async ({
   userId,
@@ -14,6 +21,7 @@ const createOrder = async ({
   takeProfit = null,
   source = "MANUAL",
   strategy = null,
+  bot = null,
 }) => {
   const validation = validateOrderData({
     symbol,
@@ -24,6 +32,10 @@ const createOrder = async ({
 
   if (!validation.valid) {
     throw new Error(validation.reason);
+  }
+
+  if (!tradingAccountId) {
+    throw new Error("Trading account is required");
   }
 
   const order = await Order.create({
@@ -41,6 +53,7 @@ const createOrder = async ({
     status: "PENDING",
     source,
     strategy,
+    bot,
     executedAt: null,
   });
 
@@ -48,9 +61,10 @@ const createOrder = async ({
 };
 
 const getOrderById = async (orderId) => {
-  return Order.findById(orderId);
+  return Order.findById(orderId)
+    .populate("strategy", "name strategyType")
+    .populate("bot", "name symbol status");
 };
-
 
 const getOrderHistory = async ({
   userId,
@@ -68,28 +82,46 @@ const getOrderHistory = async ({
   }
 
   if (status) {
-    query.status = status;
+    query.status = status.toUpperCase();
   }
 
-  const orders = await Order.find(query)
-    .sort({ createdAt: -1 })
-    .skip(skip)
-    .limit(limit);
+  const safeLimit = Math.min(
+    Math.max(Number(limit) || 20, 1),
+    100,
+  );
 
-  const total = await Order.countDocuments(query);
+  const safeSkip = Math.max(
+    Number(skip) || 0,
+    0,
+  );
+
+  const [orders, total] = await Promise.all([
+    Order.find(query)
+      .populate("strategy", "name strategyType")
+      .populate("bot", "name symbol status")
+      .sort({ createdAt: -1 })
+      .skip(safeSkip)
+      .limit(safeLimit)
+      .lean(),
+
+    Order.countDocuments(query),
+  ]);
 
   return {
     orders,
     pagination: {
       total,
-      limit,
-      skip,
-      hasMore: skip + orders.length < total,
+      limit: safeLimit,
+      skip: safeSkip,
+      hasMore: safeSkip + orders.length < total,
     },
   };
 };
 
-const updateOrderStatus = async (orderId, newStatus) => {
+const updateOrderStatus = async (
+  orderId,
+  newStatus,
+) => {
   const order = await Order.findById(orderId);
 
   if (!order) {
@@ -97,10 +129,13 @@ const updateOrderStatus = async (orderId, newStatus) => {
   }
 
   if (!Object.values(ORDER_STATUS).includes(newStatus)) {
-    throw new Error(`Invalid order status: ${newStatus}`);
+    throw new Error(
+      `Invalid order status: ${newStatus}`,
+    );
   }
 
-  const allowedTransitions = ORDER_STATUS_TRANSITIONS[order.status] || [];
+  const allowedTransitions =
+    ORDER_STATUS_TRANSITIONS[order.status] || [];
 
   if (!allowedTransitions.includes(newStatus)) {
     throw new Error(
@@ -119,4 +154,9 @@ const updateOrderStatus = async (orderId, newStatus) => {
   return order;
 };
 
-export { createOrder, getOrderById, updateOrderStatus, getOrderHistory,};
+export {
+  createOrder,
+  getOrderById,
+  updateOrderStatus,
+  getOrderHistory,
+};

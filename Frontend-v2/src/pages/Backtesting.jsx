@@ -122,7 +122,7 @@ const Backtesting = () => {
         initialCapital:
           Number(initialCapital),
         quantity: Number(quantity),
-       strategyKey: strategy,
+        strategyKey: strategy,
         smaPeriod: Number(smaPeriod),
         emaPeriod: Number(emaPeriod),
         rsiPeriod: Number(rsiPeriod),

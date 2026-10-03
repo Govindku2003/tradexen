@@ -31,22 +31,16 @@ import {
 const runningBots = new Map();
 
 const strategyNameMap = {
-  EMA_CROSSOVER:
-    "Moving Average Strategy",
-
-  RSI:
-    "RSI Strategy",
-
-  MACD:
-    "MACD Strategy",
+  EMA_CROSSOVER: "Moving Average Strategy",
+  RSI: "RSI Strategy",
+  MACD: "MACD Strategy",
 };
 
 const getSignalForStrategy = (
   strategies,
   strategyType,
 ) => {
-  const targetName =
-    strategyNameMap[strategyType];
+  const targetName = strategyNameMap[strategyType];
 
   return (
     strategies.find(
@@ -78,6 +72,11 @@ const logBotActivity = async ({
   });
 };
 
+/*
+|--------------------------------------------------------------------------
+| Analyze Bot
+|--------------------------------------------------------------------------
+*/
 const analyzeBot = async (botId) => {
   const bot = await Bot.findById(botId);
 
@@ -92,6 +91,12 @@ const analyzeBot = async (botId) => {
 
   if (!strategy) {
     throw new Error("Bot strategy not found");
+  }
+
+  if (!bot.instrumentKey) {
+    throw new Error(
+      "Bot instrument key is required",
+    );
   }
 
   const now = new Date();
@@ -156,14 +161,12 @@ const analyzeBot = async (botId) => {
 
         fastEMAPeriod:
           Number(
-            parameters.fastEMAPeriod ||
-              9,
+            parameters.fastEMAPeriod || 9,
           ),
 
         slowEMAPeriod:
           Number(
-            parameters.slowEMAPeriod ||
-              21,
+            parameters.slowEMAPeriod || 21,
           ),
 
         rsiPeriod:
@@ -173,20 +176,17 @@ const analyzeBot = async (botId) => {
 
         macdFastPeriod:
           Number(
-            parameters.macdFastPeriod ||
-              12,
+            parameters.macdFastPeriod || 12,
           ),
 
         macdSlowPeriod:
           Number(
-            parameters.macdSlowPeriod ||
-              26,
+            parameters.macdSlowPeriod || 26,
           ),
 
         macdSignalPeriod:
           Number(
-            parameters.macdSignalPeriod ||
-              9,
+            parameters.macdSignalPeriod || 9,
           ),
       },
     );
@@ -252,24 +252,37 @@ const analyzeBot = async (botId) => {
   return {
     bot,
     strategy,
+
     price:
       Number(
         latestCandle.close,
       ),
+
     timestamp:
       latestCandle.timestamp,
-    indicators: latestIndicators,
+
+    indicators:
+      latestIndicators,
+
     signal:
       selectedSignal.signal,
+
     reason:
       selectedSignal.reason,
+
     strategyResult:
       selectedSignal,
+
     decision:
       result.decision,
   };
 };
 
+/*
+|--------------------------------------------------------------------------
+| Execute Bot Signal
+|--------------------------------------------------------------------------
+*/
 const executeBotSignal = async ({
   analysis,
 }) => {
@@ -282,6 +295,7 @@ const executeBotSignal = async ({
 
   if (signal === "HOLD") {
     bot.lastProcessedSignal = null;
+
     await bot.save();
 
     return {
@@ -296,7 +310,8 @@ const executeBotSignal = async ({
   ) {
     return {
       executed: false,
-      reason: "BUY is disabled for this bot",
+      reason:
+        "BUY is disabled for this bot",
     };
   }
 
@@ -306,14 +321,35 @@ const executeBotSignal = async ({
   ) {
     return {
       executed: false,
-      reason: "SELL is disabled for this bot",
+      reason:
+        "SELL is disabled for this bot",
     };
   }
 
   /*
-    Prevent the same signal from creating
-    repeated orders every polling cycle.
+  |--------------------------------------------------------------------------
+  | Resolve Active Trading Account
+  |--------------------------------------------------------------------------
   */
+
+  const account =
+    await TradingAccount.findOne({
+      user: bot.user,
+      status: "active",
+    });
+
+  if (!account) {
+    throw new Error(
+      "Active trading account not found",
+    );
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | Prevent Duplicate Signal Execution
+  |--------------------------------------------------------------------------
+  */
+
   if (
     bot.lastProcessedSignal === signal
   ) {
@@ -324,20 +360,21 @@ const executeBotSignal = async ({
     };
   }
 
+  /*
+  |--------------------------------------------------------------------------
+  | SELL Position Validation
+  |--------------------------------------------------------------------------
+  */
+
   if (signal === "SELL") {
     const position =
       await getOpenPosition({
         userId: bot.user,
-        tradingAccountId: null,
+        tradingAccountId:
+          account._id,
         symbol: bot.symbol,
       }).catch(() => null);
 
-    /*
-      The order execution service itself
-      validates the account/position.
-      We only avoid creating an obviously
-      invalid SELL here.
-    */
     if (!position) {
       bot.lastProcessedSignal =
         "SELL";
@@ -352,20 +389,24 @@ const executeBotSignal = async ({
     }
   }
 
+  /*
+  |--------------------------------------------------------------------------
+  | Stop Loss / Take Profit
+  |--------------------------------------------------------------------------
+  */
+
   let stopLoss = null;
   let takeProfit = null;
 
   if (signal === "BUY") {
     const slPercent =
       Number(
-        bot.settings.stopLossPercent ||
-          0,
+        bot.settings.stopLossPercent || 0,
       );
 
     const tpPercent =
       Number(
-        bot.settings.takeProfitPercent ||
-          0,
+        bot.settings.takeProfitPercent || 0,
       );
 
     if (slPercent > 0) {
@@ -381,52 +422,93 @@ const executeBotSignal = async ({
     }
   }
 
+  /*
+  |--------------------------------------------------------------------------
+  | Create BOT Order
+  |--------------------------------------------------------------------------
+  */
+
   const order =
     await createOrder({
       userId: bot.user,
-      tradingAccountId: null,
+
+      tradingAccountId:
+        account._id,
+
       symbol: bot.symbol,
+
       side: signal,
+
       orderType: "MARKET",
-      quantity: bot.quantity,
+
+      quantity:
+        Number(bot.quantity),
+
       requestedPrice: price,
+
       stopLoss,
+
       takeProfit,
+
       source: "BOT",
-      strategy: strategy._id,
+
+      strategy:
+        strategy._id,
+
+      bot: bot._id,
     });
 
   /*
-    executeOrder resolves and validates
-    the actual trading account from the order.
+  |--------------------------------------------------------------------------
+  | Execute Paper Order
+  |--------------------------------------------------------------------------
   */
+
   const execution =
     await executeOrder(
       order._id,
     );
 
+  /*
+  |--------------------------------------------------------------------------
+  | Update Bot Statistics
+  |--------------------------------------------------------------------------
+  */
+
   bot.lastProcessedSignal =
     signal;
 
-  bot.totalOrders += 1;
+  bot.totalOrders =
+    Number(bot.totalOrders || 0) + 1;
 
-  if (
-    execution?.trade
-  ) {
-    bot.totalTrades += 1;
+  if (execution?.trade) {
+    bot.totalTrades =
+      Number(bot.totalTrades || 0) + 1;
   }
 
   await bot.save();
 
   return {
     executed: true,
-    order: execution.order,
-    trade: execution.trade,
+
+    order:
+      execution.order,
+
+    trade:
+      execution.trade,
   };
 };
 
-const runBotCycle = async (botId) => {
-  const bot = await Bot.findById(botId);
+/*
+|--------------------------------------------------------------------------
+| Run Bot Cycle
+|--------------------------------------------------------------------------
+*/
+const runBotCycle = async (
+  botId,
+) => {
+  const bot =
+    await Bot.findById(botId);
 
   if (
     !bot ||
@@ -437,7 +519,9 @@ const runBotCycle = async (botId) => {
 
   try {
     const analysis =
-      await analyzeBot(botId);
+      await analyzeBot(
+        botId,
+      );
 
     bot.lastSignal =
       analysis.signal;
@@ -451,53 +535,81 @@ const runBotCycle = async (botId) => {
     bot.lastAnalysisAt =
       new Date();
 
-    bot.totalSignals += 1;
+    bot.totalSignals =
+      Number(
+        bot.totalSignals || 0,
+      ) + 1;
 
-    bot.errorMessage = null;
+    bot.errorMessage =
+      null;
 
     await bot.save();
 
     const signalRecord =
       await BotSignal.create({
         bot: bot._id,
+
         user: bot.user,
+
         strategy:
           analysis.strategy._id,
-        symbol: bot.symbol,
+
+        symbol:
+          bot.symbol,
+
         instrumentKey:
           bot.instrumentKey,
+
         signal:
           analysis.signal,
+
         price:
           analysis.price,
+
         reason:
           analysis.reason,
+
         indicators:
           analysis.indicators,
       });
 
     await logBotActivity({
       bot,
+
       action:
         "BOT_SIGNAL_GENERATED",
+
       description:
         `${analysis.signal} signal generated for ${bot.symbol}`,
+
       level:
         analysis.signal === "HOLD"
           ? "INFO"
           : "SUCCESS",
+
       metadata: {
-        botId: bot._id,
+        botId:
+          bot._id,
+
         signalId:
           signalRecord._id,
+
         signal:
           analysis.signal,
+
         price:
           analysis.price,
+
         reason:
           analysis.reason,
       },
     });
+
+    /*
+    |--------------------------------------------------------------------------
+    | AUTO Execution
+    |--------------------------------------------------------------------------
+    */
 
     if (
       bot.controlMode === "AUTO" &&
@@ -526,15 +638,20 @@ const runBotCycle = async (botId) => {
 
           await logBotActivity({
             bot,
+
             action:
               "BOT_ORDER_EXECUTED",
+
             description:
               `${analysis.signal} order executed automatically`,
+
             level:
               "SUCCESS",
+
             metadata: {
               orderId:
                 execution.order?._id,
+
               tradeId:
                 execution.trade?._id,
             },
@@ -548,10 +665,13 @@ const runBotCycle = async (botId) => {
 
         await logBotActivity({
           bot,
+
           action:
             "BOT_ORDER_ERROR",
+
           description:
             error.message,
+
           level:
             "ERROR",
         });
@@ -561,20 +681,28 @@ const runBotCycle = async (botId) => {
     return analysis;
   } catch (error) {
     const failedBot =
-      await Bot.findById(botId);
+      await Bot.findById(
+        botId,
+      );
 
     if (failedBot) {
-      failedBot.status = "ERROR";
+      failedBot.status =
+        "ERROR";
+
       failedBot.errorMessage =
         error.message;
+
       await failedBot.save();
 
       await logBotActivity({
         bot: failedBot,
+
         action:
           "BOT_ANALYSIS_ERROR",
+
         description:
           error.message,
+
         level:
           "ERROR",
       });
@@ -584,41 +712,67 @@ const runBotCycle = async (botId) => {
   }
 };
 
+/*
+|--------------------------------------------------------------------------
+| Start Bot Engine
+|--------------------------------------------------------------------------
+*/
 const startBotEngine = async (
   botId,
 ) => {
-  if (runningBots.has(botId.toString())) {
+  const key =
+    botId.toString();
+
+  if (
+    runningBots.has(key)
+  ) {
     return;
   }
 
-  await runBotCycle(botId).catch(
-    (error) =>
-      console.error(
-        "Initial bot cycle error:",
-        error.message,
-      ),
+  /*
+  Initial cycle only works when
+  the Bot is already RUNNING.
+  The controller must change the
+  status before calling this function.
+  */
+
+  await runBotCycle(
+    botId,
+  ).catch((error) =>
+    console.error(
+      "Initial bot cycle error:",
+      error.message,
+    ),
   );
 
-  const interval = setInterval(
-    async () => {
-      try {
-        await runBotCycle(botId);
-      } catch (error) {
-        console.error(
-          `Bot ${botId} cycle error:`,
-          error.message,
-        );
-      }
-    },
-    15000,
-  );
+  const interval =
+    setInterval(
+      async () => {
+        try {
+          await runBotCycle(
+            botId,
+          );
+        } catch (error) {
+          console.error(
+            `Bot ${botId} cycle error:`,
+            error.message,
+          );
+        }
+      },
+      15000,
+    );
 
   runningBots.set(
-    botId.toString(),
+    key,
     interval,
   );
 };
 
+/*
+|--------------------------------------------------------------------------
+| Stop Bot Engine
+|--------------------------------------------------------------------------
+*/
 const stopBotEngine = (
   botId,
 ) => {
@@ -629,11 +783,21 @@ const stopBotEngine = (
     runningBots.get(key);
 
   if (interval) {
-    clearInterval(interval);
-    runningBots.delete(key);
+    clearInterval(
+      interval,
+    );
+
+    runningBots.delete(
+      key,
+    );
   }
 };
 
+/*
+|--------------------------------------------------------------------------
+| Engine Status
+|--------------------------------------------------------------------------
+*/
 const getEngineStatus = (
   botId,
 ) => {
@@ -642,18 +806,24 @@ const getEngineStatus = (
   );
 };
 
-const resumeRunningBots = async () => {
-  const bots =
-    await Bot.find({
-      status: "RUNNING",
-    });
+/*
+|--------------------------------------------------------------------------
+| Resume Running Bots
+|--------------------------------------------------------------------------
+*/
+const resumeRunningBots =
+  async () => {
+    const bots =
+      await Bot.find({
+        status: "RUNNING",
+      });
 
-  for (const bot of bots) {
-    await startBotEngine(
-      bot._id,
-    );
-  }
-};
+    for (const bot of bots) {
+      await startBotEngine(
+        bot._id,
+      );
+    }
+  };
 
 export {
   analyzeBot,

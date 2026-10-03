@@ -12,7 +12,14 @@ const backtestSchema = new mongoose.Schema(
     strategy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Strategy",
-      required: true,
+      default: null,
+      index: true,
+    },
+
+    strategyKey: {
+      type: String,
+      default: "all",
+      trim: true,
     },
 
     name: {
@@ -29,11 +36,29 @@ const backtestSchema = new mongoose.Schema(
       trim: true,
     },
 
+    instrumentKey: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+
     exchange: {
       type: String,
       required: true,
       uppercase: true,
       default: "NSE",
+    },
+
+    unit: {
+      type: String,
+      required: true,
+      default: "days",
+    },
+
+    interval: {
+      type: String,
+      required: true,
+      default: "1",
     },
 
     startDate: {
@@ -96,6 +121,34 @@ const backtestSchema = new mongoose.Schema(
     maxDrawdown: {
       type: Number,
       default: 0,
+      min: 0,
+    },
+
+    quantity: {
+      type: Number,
+      default: 1,
+      min: 1,
+    },
+
+    configuration: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
+    },
+
+    trades: {
+      type: [mongoose.Schema.Types.Mixed],
+      default: [],
+    },
+
+    equityCurve: {
+      type: [mongoose.Schema.Types.Mixed],
+      default: [],
+    },
+
+    candlesProcessed: {
+      type: Number,
+      default: 0,
+      min: 0,
     },
 
     status: {
@@ -118,8 +171,19 @@ const backtestSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-  }
+  },
 );
+
+backtestSchema.index({
+  user: 1,
+  createdAt: -1,
+});
+
+backtestSchema.index({
+  user: 1,
+  strategy: 1,
+  createdAt: -1,
+});
 
 const Backtest = mongoose.model("Backtest", backtestSchema);
 

@@ -96,17 +96,37 @@ const orderSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Strategy",
       default: null,
+      index: true,
+    },
+
+    bot: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Bot",
+      default: null,
+      index: true,
     },
 
     executedAt: {
       type: Date,
       default: null,
+      index: true,
     },
   },
   {
     timestamps: true,
-  }
+  },
 );
+
+orderSchema.index({
+  user: 1,
+  tradingAccount: 1,
+  createdAt: -1,
+});
+
+orderSchema.index({
+  bot: 1,
+  createdAt: -1,
+});
 
 const Order = mongoose.model("Order", orderSchema);
 

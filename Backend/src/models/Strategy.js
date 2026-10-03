@@ -30,6 +30,12 @@ const strategySchema = new mongoose.Schema(
       trim: true,
     },
 
+    instrumentKey: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+
     exchange: {
       type: String,
       required: true,
@@ -41,6 +47,7 @@ const strategySchema = new mongoose.Schema(
       type: String,
       enum: ["EMA_CROSSOVER", "RSI", "MACD"],
       required: true,
+      index: true,
     },
 
     parameters: {
@@ -76,8 +83,13 @@ const strategySchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-  }
+  },
 );
+
+strategySchema.index({
+  user: 1,
+  strategyType: 1,
+});
 
 const Strategy = mongoose.model("Strategy", strategySchema);
 

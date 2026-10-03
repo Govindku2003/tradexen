@@ -17,7 +17,6 @@ import portfolioRoutes from "./routes/portfolio.routes.js";
 import botRoutes from "./routes/bot.routes.js";
 import tradeRoutes from "./routes/trade.routes.js";
 
-
 const app = express();
 
 /*
