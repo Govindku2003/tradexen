@@ -1,9 +1,16 @@
 import Order from "../../models/Order.js";
+import Trade from "../../models/Trade.js";
 import TradingAccount from "../../models/TradingAccount.js";
 
 import { executePaperTrade } from "../execution/paperTrading.engine.js";
 
+import { createTradeRecord } from "../execution/tradeRecord.service.js";
+
+import { getTodayRealizedPnL } from "../risk/dailyLoss.service.js";
+
 import { ORDER_STATUS } from "./order.status.js";
+
+import riskManager from "../risk/risk.manager.js";
 
 import {
   getOpenPosition,
@@ -29,7 +36,7 @@ const executeOrder = async (orderId) => {
   }
 
   // --------------------------------------------------
-  // 2. FIND USER'S ACTIVE TRADING ACCOUNT
+  // 2. FIND ACTIVE TRADING ACCOUNT
   // --------------------------------------------------
 
   const account = await TradingAccount.findOne({
@@ -46,17 +53,18 @@ const executeOrder = async (orderId) => {
   // 3. EXECUTION PRICE
   // --------------------------------------------------
 
-  const executionPrice = order.requestedPrice;
+  const executionPrice = Number(order.requestedPrice);
+  console.log("DEBUG requestedPrice:", order.requestedPrice);
+  console.log("DEBUG executionPrice:", executionPrice);
 
-  if (typeof executionPrice !== "number" || executionPrice <= 0) {
+  if (!Number.isFinite(executionPrice) || executionPrice <= 0) {
     order.status = ORDER_STATUS.REJECTED;
     await order.save();
 
     throw new Error("Valid execution price is required");
   }
-
   // --------------------------------------------------
-  // 4. FIND EXISTING OPEN POSITION
+  // 4. FIND EXISTING POSITION
   // --------------------------------------------------
 
   const existingPosition = await getOpenPosition({
@@ -66,7 +74,73 @@ const executeOrder = async (orderId) => {
   });
 
   // --------------------------------------------------
-  // 5. PREPARE PAPER EXECUTION ORDER
+  // 5. VALIDATE SELL QUANTITY BEFORE RISK/EXECUTION
+  // --------------------------------------------------
+
+  if (order.side === "SELL") {
+    if (!existingPosition) {
+      order.status = ORDER_STATUS.REJECTED;
+      await order.save();
+
+      throw new Error(`No open position exists for ${order.symbol}`);
+    }
+
+    if (order.quantity > existingPosition.quantity) {
+      order.status = ORDER_STATUS.REJECTED;
+      await order.save();
+
+      throw new Error(`Insufficient position quantity for ${order.symbol}`);
+    }
+  }
+
+  // --------------------------------------------------
+  // 6. PROPOSED EXPOSURE
+  // --------------------------------------------------
+
+  const proposedExposure =
+    order.side === "BUY" ? executionPrice * order.quantity : 0;
+
+  // --------------------------------------------------
+  // 7. TODAY'S REALIZED P&L / DAILY LOSS
+  // --------------------------------------------------
+
+  const dailyPnL = await getTodayRealizedPnL({
+    tradingAccountId: account._id,
+  });
+
+  // --------------------------------------------------
+  // 8. RISK MANAGEMENT
+  // --------------------------------------------------
+
+  const riskResult = riskManager.evaluateTrade({
+    accountBalance: account.availableBalance,
+
+    entryPrice: executionPrice,
+
+    riskPercentage: 0.02,
+
+    riskRewardRatio: 2,
+
+    investedAmount: account.investedAmount || 0,
+
+    proposedExposure,
+
+    maxExposurePercentage: 1,
+
+    dailyLoss: dailyPnL.dailyLoss,
+
+    side: order.side,
+  });
+
+  if (!riskResult.allowed) {
+    order.status = ORDER_STATUS.REJECTED;
+    await order.save();
+
+    throw new Error(`Risk check rejected order: ${riskResult.reason}`);
+  }
+
+  // --------------------------------------------------
+  // 9. PREPARE PAPER EXECUTION ORDER
   // --------------------------------------------------
 
   const executionOrder = {
@@ -77,13 +151,14 @@ const executeOrder = async (orderId) => {
   };
 
   // --------------------------------------------------
-  // 6. PAPER EXECUTION
+  // 10. PAPER EXECUTION
   // --------------------------------------------------
 
   const result = executePaperTrade({
     account: {
       availableBalance: account.availableBalance,
     },
+
     position: existingPosition
       ? {
           symbol: existingPosition.symbol,
@@ -92,11 +167,12 @@ const executeOrder = async (orderId) => {
           status: existingPosition.status,
         }
       : null,
+
     order: executionOrder,
   });
 
   // --------------------------------------------------
-  // 7. EXECUTION FAILED
+  // 11. EXECUTION FAILED
   // --------------------------------------------------
 
   if (!result.executed) {
@@ -107,13 +183,24 @@ const executeOrder = async (orderId) => {
   }
 
   // --------------------------------------------------
-  // 8. UPDATE ACCOUNT BALANCE
+  // 12. CALCULATE REALIZED P&L
+  // --------------------------------------------------
+
+  let realizedPnL = 0;
+
+  if (order.side === "SELL" && existingPosition) {
+    realizedPnL =
+      (executionPrice - existingPosition.averageEntryPrice) * order.quantity;
+  }
+
+  // --------------------------------------------------
+  // 13. UPDATE ACCOUNT BALANCE
   // --------------------------------------------------
 
   account.availableBalance = result.balance.newBalance;
 
   // --------------------------------------------------
-  // 9. UPDATE POSITION DATABASE
+  // 14. UPDATE POSITION
   // --------------------------------------------------
 
   let position;
@@ -141,10 +228,6 @@ const executeOrder = async (orderId) => {
   }
 
   if (order.side === "SELL") {
-    if (!existingPosition) {
-      throw new Error(`No open position exists for ${order.symbol}`);
-    }
-
     const positionResult = await closeOrReducePosition({
       positionId: existingPosition._id,
       quantity: order.quantity,
@@ -155,10 +238,8 @@ const executeOrder = async (orderId) => {
   }
 
   // --------------------------------------------------
-  // 10. RECALCULATE INVESTED AMOUNT
+  // 15. RECALCULATE INVESTED AMOUNT
   // --------------------------------------------------
-  // Invested amount represents the current cost basis
-  // of open positions.
 
   account.investedAmount = await calculateInvestedAmount({
     userId: order.user,
@@ -168,25 +249,50 @@ const executeOrder = async (orderId) => {
   await account.save();
 
   // --------------------------------------------------
-  // 11. UPDATE ORDER
+  // 16. UPDATE ORDER
   // --------------------------------------------------
 
   order.executedPrice = executionPrice;
+
   order.status = ORDER_STATUS.FILLED;
+
   order.executedAt = new Date();
 
   await order.save();
 
   // --------------------------------------------------
-  // 12. RETURN RESULT
+  // 17. CREATE TRADE RECORD
+  // --------------------------------------------------
+
+  const tradeData = createTradeRecord({
+    order,
+    executionPrice,
+    realizedPnL,
+    strategy: order.strategy || null,
+    signal: null,
+  });
+
+  const trade = await Trade.create(tradeData);
+
+  // --------------------------------------------------
+  // 18. RETURN FINAL RESULT
   // --------------------------------------------------
 
   return {
     order,
+
     execution: result.execution,
+
     balance: result.balance,
+
     position,
-    trade: result.trade,
+
+    trade,
+
+    realizedPnL,
+
+    dailyLoss: dailyPnL.dailyLoss,
+
     tradingAccount: {
       id: account._id,
       availableBalance: account.availableBalance,

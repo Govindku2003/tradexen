@@ -1,15 +1,23 @@
 import Position from "../../models/Position.js";
 
-const getOpenPosition = async ({ userId, tradingAccountId, symbol }) => {
+const getOpenPosition = async ({
+  userId,
+  tradingAccountId,
+  symbol,
+}) => {
   return Position.findOne({
     user: userId,
     tradingAccount: tradingAccountId,
     symbol: symbol.toUpperCase(),
     status: "OPEN",
+    quantity: { $gt: 0 },
   });
 };
 
-const getPositionById = async ({ positionId, userId }) => {
+const getPositionById = async ({
+  positionId,
+  userId,
+}) => {
   return Position.findOne({
     _id: positionId,
     user: userId,
@@ -28,8 +36,18 @@ const getPositionHistory = async ({
     tradingAccount: tradingAccountId,
   };
 
+  /*
+   * Positions endpoint should show only
+   * currently active positions by default.
+   *
+   * Closed positions can still be requested
+   * explicitly using ?status=CLOSED.
+   */
   if (status) {
     query.status = status;
+  } else {
+    query.status = "OPEN";
+    query.quantity = { $gt: 0 };
   }
 
   const positions = await Position.find(query)
@@ -81,7 +99,10 @@ const createPosition = async ({
     throw new Error("Quantity must be a positive integer");
   }
 
-  if (typeof entryPrice !== "number" || entryPrice <= 0) {
+  if (
+    typeof entryPrice !== "number" ||
+    entryPrice <= 0
+  ) {
     throw new Error("Entry price must be positive");
   }
 
@@ -92,7 +113,9 @@ const createPosition = async ({
   });
 
   if (existingPosition) {
-    throw new Error(`Open position already exists for ${symbol.toUpperCase()}`);
+    throw new Error(
+      `Open position already exists for ${symbol.toUpperCase()}`,
+    );
   }
 
   const position = await Position.create({
@@ -114,12 +137,19 @@ const createPosition = async ({
   return position;
 };
 
-const updatePositionAfterBuy = async ({ positionId, quantity, entryPrice }) => {
+const updatePositionAfterBuy = async ({
+  positionId,
+  quantity,
+  entryPrice,
+}) => {
   if (!Number.isInteger(quantity) || quantity <= 0) {
     throw new Error("Quantity must be a positive integer");
   }
 
-  if (typeof entryPrice !== "number" || entryPrice <= 0) {
+  if (
+    typeof entryPrice !== "number" ||
+    entryPrice <= 0
+  ) {
     throw new Error("Entry price must be positive");
   }
 
@@ -139,7 +169,9 @@ const updatePositionAfterBuy = async ({ positionId, quantity, entryPrice }) => {
   const newQuantity = oldQuantity + quantity;
 
   const newAveragePrice =
-    (oldQuantity * oldAveragePrice + quantity * entryPrice) / newQuantity;
+    (oldQuantity * oldAveragePrice +
+      quantity * entryPrice) /
+    newQuantity;
 
   position.quantity = newQuantity;
   position.averageEntryPrice = newAveragePrice;
@@ -150,12 +182,19 @@ const updatePositionAfterBuy = async ({ positionId, quantity, entryPrice }) => {
   return position;
 };
 
-const closeOrReducePosition = async ({ positionId, quantity, exitPrice }) => {
+const closeOrReducePosition = async ({
+  positionId,
+  quantity,
+  exitPrice,
+}) => {
   if (!Number.isInteger(quantity) || quantity <= 0) {
     throw new Error("Quantity must be a positive integer");
   }
 
-  if (typeof exitPrice !== "number" || exitPrice <= 0) {
+  if (
+    typeof exitPrice !== "number" ||
+    exitPrice <= 0
+  ) {
     throw new Error("Exit price must be positive");
   }
 
@@ -166,14 +205,20 @@ const closeOrReducePosition = async ({ positionId, quantity, exitPrice }) => {
   }
 
   if (position.status !== "OPEN") {
-    throw new Error("Only an open position can be closed or reduced");
+    throw new Error(
+      "Only an open position can be closed or reduced",
+    );
   }
 
   if (quantity > position.quantity) {
-    throw new Error("Sell quantity exceeds position quantity");
+    throw new Error(
+      "Sell quantity exceeds position quantity",
+    );
   }
 
-  const realizedPnL = (exitPrice - position.averageEntryPrice) * quantity;
+  const realizedPnL =
+    (exitPrice - position.averageEntryPrice) *
+    quantity;
 
   position.realizedPnL += realizedPnL;
   position.currentPrice = exitPrice;
@@ -209,21 +254,28 @@ const calculateInvestedAmount = async ({
     user: userId,
     tradingAccount: tradingAccountId,
     status: "OPEN",
+    quantity: { $gt: 0 },
   });
 
   const investedAmount = openPositions.reduce(
     (total, position) =>
-      total + position.quantity * position.averageEntryPrice,
+      total +
+      position.quantity *
+        position.averageEntryPrice,
     0,
   );
 
   return investedAmount;
 };
 
-
-
-const calculateUnrealizedPnL = async ({ positionId, currentPrice }) => {
-  if (typeof currentPrice !== "number" || currentPrice <= 0) {
+const calculateUnrealizedPnL = async ({
+  positionId,
+  currentPrice,
+}) => {
+  if (
+    typeof currentPrice !== "number" ||
+    currentPrice <= 0
+  ) {
     throw new Error("Current price must be positive");
   }
 
@@ -234,17 +286,23 @@ const calculateUnrealizedPnL = async ({ positionId, currentPrice }) => {
   }
 
   if (position.status !== "OPEN") {
-    throw new Error("Unrealized P&L is only available for open positions");
+    throw new Error(
+      "Unrealized P&L is only available for open positions",
+    );
   }
 
   let unrealizedPnL;
 
   if (position.side === "LONG") {
     unrealizedPnL =
-      (currentPrice - position.averageEntryPrice) * position.quantity;
+      (currentPrice -
+        position.averageEntryPrice) *
+      position.quantity;
   } else {
     unrealizedPnL =
-      (position.averageEntryPrice - currentPrice) * position.quantity;
+      (position.averageEntryPrice -
+        currentPrice) *
+      position.quantity;
   }
 
   position.currentPrice = currentPrice;

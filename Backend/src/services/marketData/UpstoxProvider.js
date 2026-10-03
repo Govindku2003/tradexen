@@ -22,7 +22,8 @@ class UpstoxProvider extends MarketDataProvider {
       instrumentKey,
     )}`;
 
-    const response = await fetch(url, {
+    const response = 
+    await fetch(url, {
       method: "GET",
       headers: {
         Accept: "application/json",
@@ -43,14 +44,59 @@ class UpstoxProvider extends MarketDataProvider {
     return data;
   }
 
-  async getHistoricalData(symbol, interval, from, to) {
+  async getHistoricalData(instrumentKey, unit, interval, from, to) {
     if (!this.accessToken) {
       throw new Error("UPSTOX_ANALYTICS_TOKEN is not configured");
     }
 
-    throw new Error(
-      `Upstox historical data integration is not connected yet for symbol: ${symbol}`,
-    );
+    if (!instrumentKey) {
+      throw new Error("instrumentKey is required");
+    }
+
+    if (!unit) {
+      throw new Error("unit is required");
+    }
+
+    if (!interval) {
+      throw new Error("interval is required");
+    }
+
+    if (!to) {
+      throw new Error("to date is required");
+    }
+
+    const encodedInstrumentKey = encodeURIComponent(instrumentKey);
+
+    let url =
+      `${this.baseUrl}/historical-candle/` +
+      `${encodedInstrumentKey}/` +
+      `${encodeURIComponent(unit)}/` +
+      `${encodeURIComponent(interval)}/` +
+      `${encodeURIComponent(to)}`;
+
+    if (from) {
+      url += `/${encodeURIComponent(from)}`;
+    }
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${this.accessToken}`,
+      },
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        data?.errors?.[0]?.message ||
+          data?.message ||
+          `Upstox historical API request failed with status ${response.status}`,
+      );
+    }
+
+    return data;
   }
 
   async connectWebSocket() {

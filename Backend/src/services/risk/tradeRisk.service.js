@@ -4,17 +4,46 @@ const validateTradeRisk = ({
   maxRiskPercentage = 0.02,
 }) => {
   if (
-    accountBalance <= 0 ||
-    riskAmount < 0 ||
-    maxRiskPercentage <= 0
+    !Number.isFinite(accountBalance) ||
+    accountBalance <= 0
   ) {
     throw new Error(
-      "Account balance, risk amount and max risk percentage must be valid"
+      "Account balance must be a positive number"
+    );
+  }
+
+  if (
+    !Number.isFinite(riskAmount) ||
+    riskAmount < 0
+  ) {
+    throw new Error(
+      "Risk amount must be a valid non-negative number"
+    );
+  }
+
+  if (
+    !Number.isFinite(maxRiskPercentage) ||
+    maxRiskPercentage <= 0 ||
+    maxRiskPercentage > 1
+  ) {
+    throw new Error(
+      "Maximum risk percentage must be between 0 and 1"
     );
   }
 
   const maxAllowedRisk =
     accountBalance * maxRiskPercentage;
+
+  const remainingRiskCapacity =
+    Math.max(
+      maxAllowedRisk - riskAmount,
+      0
+    );
+
+  const riskUtilization =
+    maxAllowedRisk > 0
+      ? (riskAmount / maxAllowedRisk) * 100
+      : 0;
 
   const allowed =
     riskAmount <= maxAllowedRisk;
@@ -24,6 +53,10 @@ const validateTradeRisk = ({
     accountBalance,
     riskAmount,
     maxAllowedRisk,
+    remainingRiskCapacity,
+    riskUtilizationPercentage: Number(
+      riskUtilization.toFixed(2)
+    ),
     maxRiskPercentage,
     reason: allowed
       ? "Trade risk is within allowed limit"

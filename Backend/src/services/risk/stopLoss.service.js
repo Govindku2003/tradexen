@@ -2,13 +2,45 @@ const calculateStopLoss = ({
   entryPrice,
   stopLossPercentage,
   side = "BUY",
+  maxStopLossPercentage = 5,
+  tickSize = 0.05,
 }) => {
   if (
-    entryPrice <= 0 ||
+    !Number.isFinite(entryPrice) ||
+    entryPrice <= 0
+  ) {
+    throw new Error("Entry price must be positive");
+  }
+
+  if (
+    !Number.isFinite(stopLossPercentage) ||
     stopLossPercentage <= 0
   ) {
     throw new Error(
-      "Entry price and stop loss percentage must be positive"
+      "Stop loss percentage must be positive"
+    );
+  }
+
+  if (
+    !Number.isFinite(maxStopLossPercentage) ||
+    maxStopLossPercentage <= 0
+  ) {
+    throw new Error(
+      "Maximum stop loss percentage must be positive"
+    );
+  }
+
+  if (
+    stopLossPercentage > maxStopLossPercentage
+  ) {
+    throw new Error(
+      `Stop loss cannot exceed ${maxStopLossPercentage}%`
+    );
+  }
+
+  if (!["BUY", "SELL"].includes(side)) {
+    throw new Error(
+      "Trade side must be BUY or SELL"
     );
   }
 
@@ -20,20 +52,24 @@ const calculateStopLoss = ({
   if (side === "BUY") {
     stopLossPrice =
       entryPrice * (1 - percentage);
-  } else if (side === "SELL") {
+  } else {
     stopLossPrice =
       entryPrice * (1 + percentage);
-  } else {
-    throw new Error(
-      "Trade side must be BUY or SELL"
-    );
   }
+
+  const roundedStopLoss =
+    Math.round(stopLossPrice / tickSize) *
+    tickSize;
 
   return {
     entryPrice,
     stopLossPercentage,
     side,
-    stopLossPrice,
+    stopLossPrice: Number(
+      roundedStopLoss.toFixed(2)
+    ),
+    maxStopLossPercentage,
+    tickSize,
   };
 };
 

@@ -4,6 +4,7 @@ import ChartPanel from "../components/terminal/ChartPanel";
 import OrderTicket from "../components/terminal/OrderTicket";
 import TradingDock from "../components/terminal/TradingDock";
 import MarketIntelligence from "../components/terminal/MarketIntelligence";
+import BotTerminalPanel from "../components/terminal/BotTerminalPanel";
 
 function Terminal() {
   return (
@@ -17,6 +18,8 @@ function Terminal() {
 
         <OrderTicket />
       </div>
+        <BotTerminalPanel />
+
 
       <TradingDock />
 

@@ -1,21 +1,10 @@
 import apiRequest from "./apiClient";
 
 /*
-  Fetch market quote from TradeXen backend.
+  Fetch current market quote.
 
-  Backend endpoint:
+  Backend:
   GET /api/market-data/quote?instrumentKey=...
-
-  Backend normalized response:
-  {
-    instrumentKey,
-    symbol,
-    price,
-    change,
-    ohlc,
-    volume,
-    timestamp
-  }
 */
 const getMarketQuote = async (instrumentKey) => {
   if (!instrumentKey) {
@@ -28,17 +17,54 @@ const getMarketQuote = async (instrumentKey) => {
     `/market-data/quote?instrumentKey=${encodedInstrumentKey}`,
   );
 
-  /*
-    Backend controller returns:
-
-    {
-      success: true,
-      data: quote
-    }
-
-    So frontend only returns `data`.
-  */
   return response.data;
 };
 
-export { getMarketQuote };
+/*
+  Fetch historical market candles.
+
+  Backend:
+  GET /api/market-data/historical
+
+  Parameters:
+  - instrumentKey
+  - unit
+  - interval
+  - from
+  - to
+*/
+const getHistoricalCandles = async ({
+  instrumentKey,
+  unit = "minutes",
+  interval = "5",
+  from,
+  to,
+}) => {
+  if (!instrumentKey) {
+    throw new Error("Instrument key is required");
+  }
+
+  if (!to) {
+    throw new Error("To date is required");
+  }
+
+  const params = new URLSearchParams();
+
+  params.set("instrumentKey", instrumentKey);
+  params.set("unit", unit);
+  params.set("interval", interval);
+
+  if (from) {
+    params.set("from", from);
+  }
+
+  params.set("to", to);
+
+  const response = await apiRequest(
+    `/market-data/historical?${params.toString()}`,
+  );
+
+  return response.data;
+};
+
+export { getMarketQuote, getHistoricalCandles };

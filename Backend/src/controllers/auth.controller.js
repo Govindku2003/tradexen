@@ -1,10 +1,29 @@
 import User from "../models/User.js";
 import TradingAccount from "../models/TradingAccount.js";
-import { hashPassword, comparePassword, generateToken } from "../utils/auth.js";
 
+import {
+  createTradingAccount,
+} from "../services/tradingAccount.service.js";
+
+import {
+  hashPassword,
+  comparePassword,
+  generateToken,
+} from "../utils/auth.js";
+
+/*
+|--------------------------------------------------------------------------
+| SIGNUP
+|--------------------------------------------------------------------------
+*/
 const signup = async (req, res) => {
   try {
-    const { name, email, password } = req.body;
+    const {
+      name,
+      email,
+      phone,
+      password,
+    } = req.body;
 
     if (!name || !email || !password) {
       return res.status(400).json({
@@ -27,7 +46,12 @@ const signup = async (req, res) => {
       });
     }
 
-    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedEmail = email
+      .trim()
+      .toLowerCase();
+
+    const normalizedPhone =
+      phone?.trim() || null;
 
     const existingUser = await User.findOne({
       email: normalizedEmail,
@@ -36,53 +60,65 @@ const signup = async (req, res) => {
     if (existingUser) {
       return res.status(409).json({
         success: false,
-        message: "An account with this email already exists",
+        message:
+          "An account with this email already exists",
       });
     }
 
-    const hashedPassword = await hashPassword(password);
+    const hashedPassword =
+      await hashPassword(password);
 
-    // 1. Create user
+    /*
+     * Create user
+     */
     const user = await User.create({
       name: name.trim(),
       email: normalizedEmail,
+      phone: normalizedPhone,
       password: hashedPassword,
     });
 
-    // 2. Automatically create paper trading account
-    const tradingAccount = await TradingAccount.create({
-      user: user._id,
-      accountType: "paper",
-      initialBalance: 1000000,
-      availableBalance: 1000000,
-      investedAmount: 0,
-      currency: "INR",
-      status: "active",
-    });
+    /*
+     * Create paper trading account
+     */
+    const tradingAccount =
+      await createTradingAccount(user._id);
 
-    // 3. Generate JWT
-    const token = generateToken(user._id.toString());
-
+    /*
+     * Signup does NOT log the user in.
+     *
+     * User must login after signup.
+     */
     return res.status(201).json({
       success: true,
-      message: "Account created successfully",
+      message:
+        "Account created successfully. Please login to continue.",
+
       data: {
         user: {
           id: user._id,
           name: user.name,
           email: user.email,
+          phone: user.phone,
           role: user.role,
+          isActive: user.isActive,
         },
+
         tradingAccount: {
-          id: tradingAccount._id,
-          accountType: tradingAccount.accountType,
-          initialBalance: tradingAccount.initialBalance,
-          availableBalance: tradingAccount.availableBalance,
-          investedAmount: tradingAccount.investedAmount,
-          currency: tradingAccount.currency,
-          status: tradingAccount.status,
+          id: tradingAccount.account._id,
+          accountType:
+            tradingAccount.account.accountType,
+          initialBalance:
+            tradingAccount.account.initialBalance,
+          availableBalance:
+            tradingAccount.account.availableBalance,
+          investedAmount:
+            tradingAccount.account.investedAmount,
+          currency:
+            tradingAccount.account.currency,
+          status:
+            tradingAccount.account.status,
         },
-        token,
       },
     });
   } catch (error) {
@@ -95,18 +131,28 @@ const signup = async (req, res) => {
   }
 };
 
+/*
+|--------------------------------------------------------------------------
+| LOGIN
+|--------------------------------------------------------------------------
+*/
 const login = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const {
+      email,
+      password,
+    } = req.body;
 
     if (!email || !password) {
       return res.status(400).json({
         success: false,
-        message: "Email and password are required",
+        message:
+          "Email and password are required",
       });
     }
 
-    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedEmail =
+      email.trim().toLowerCase();
 
     const user = await User.findOne({
       email: normalizedEmail,
@@ -126,7 +172,11 @@ const login = async (req, res) => {
       });
     }
 
-    const isPasswordValid = await comparePassword(password, user.password);
+    const isPasswordValid =
+      await comparePassword(
+        password,
+        user.password,
+      );
 
     if (!isPasswordValid) {
       return res.status(401).json({
@@ -135,37 +185,67 @@ const login = async (req, res) => {
       });
     }
 
+    /*
+     * Update real login time
+     */
     user.lastLogin = new Date();
+
     await user.save();
 
-    // Find user's trading account
-    const tradingAccount = await TradingAccount.findOne({
-      user: user._id,
-    });
+    /*
+     * IMPORTANT:
+     *
+     * Existing users may have been created before
+     * TradingAccount creation was added to signup.
+     *
+     * Therefore, login automatically creates the
+     * missing paper trading account if required.
+     */
+    const accountResult =
+      await createTradingAccount(user._id);
 
-    const token = generateToken(user._id.toString());
+    const tradingAccount =
+      accountResult.account;
+
+    /*
+     * Generate JWT
+     */
+    const token =
+      generateToken(user._id.toString());
 
     return res.status(200).json({
       success: true,
       message: "Login successful",
+
       data: {
         user: {
           id: user._id,
           name: user.name,
           email: user.email,
+          phone: user.phone,
           role: user.role,
+          isActive: user.isActive,
+          lastLogin: user.lastLogin,
         },
+
         tradingAccount: tradingAccount
           ? {
               id: tradingAccount._id,
-              accountType: tradingAccount.accountType,
-              initialBalance: tradingAccount.initialBalance,
-              availableBalance: tradingAccount.availableBalance,
-              investedAmount: tradingAccount.investedAmount,
-              currency: tradingAccount.currency,
-              status: tradingAccount.status,
+              accountType:
+                tradingAccount.accountType,
+              initialBalance:
+                tradingAccount.initialBalance,
+              availableBalance:
+                tradingAccount.availableBalance,
+              investedAmount:
+                tradingAccount.investedAmount,
+              currency:
+                tradingAccount.currency,
+              status:
+                tradingAccount.status,
             }
           : null,
+
         token,
       },
     });
@@ -179,9 +259,16 @@ const login = async (req, res) => {
   }
 };
 
+/*
+|--------------------------------------------------------------------------
+| CURRENT AUTHENTICATED USER
+|--------------------------------------------------------------------------
+*/
 const getCurrentUser = async (req, res) => {
   try {
-    const user = await User.findById(req.userId).select("-password");
+    const user = await User.findById(
+      req.userId,
+    ).select("-password");
 
     if (!user) {
       return res.status(404).json({
@@ -190,29 +277,47 @@ const getCurrentUser = async (req, res) => {
       });
     }
 
-    const tradingAccount = await TradingAccount.findOne({
-      user: user._id,
-    });
+    /*
+     * Self-heal account for old users
+     */
+    const accountResult =
+      await createTradingAccount(user._id);
+
+    const tradingAccount =
+      accountResult.account;
 
     return res.status(200).json({
       success: true,
+
       data: {
         user,
+
         tradingAccount: tradingAccount
           ? {
               id: tradingAccount._id,
-              accountType: tradingAccount.accountType,
-              initialBalance: tradingAccount.initialBalance,
-              availableBalance: tradingAccount.availableBalance,
-              investedAmount: tradingAccount.investedAmount,
-              currency: tradingAccount.currency,
-              status: tradingAccount.status,
+              accountType:
+                tradingAccount.accountType,
+              initialBalance:
+                tradingAccount.initialBalance,
+              availableBalance:
+                tradingAccount.availableBalance,
+              investedAmount:
+                tradingAccount.investedAmount,
+              currency:
+                tradingAccount.currency,
+              status:
+                tradingAccount.status,
+              createdAt:
+                tradingAccount.createdAt,
             }
           : null,
       },
     });
   } catch (error) {
-    console.error("Get current user error:", error);
+    console.error(
+      "Get current user error:",
+      error,
+    );
 
     return res.status(500).json({
       success: false,
@@ -221,4 +326,8 @@ const getCurrentUser = async (req, res) => {
   }
 };
 
-export { signup, login, getCurrentUser };
+export {
+  signup,
+  login,
+  getCurrentUser,
+};

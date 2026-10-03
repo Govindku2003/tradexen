@@ -2,10 +2,22 @@ import {
   createContext,
   useContext,
   useEffect,
+  useRef,
   useState,
 } from "react";
 
-import { getMarketQuote, getHistoricalCandles, } from "../services/api/marketApi";
+import {
+  getMarketQuote,
+  getHistoricalCandles,
+} from "../services/api/marketApi";
+
+import {
+  getMarketIndicators,
+} from "../services/api/indicatorApi";
+
+import {
+  subscribeMarketWebSocket,
+} from "../services/websocket/marketWebSocket";
 
 const TerminalContext = createContext(null);
 
@@ -40,35 +52,37 @@ export const TERMINAL_SYMBOLS = [
   },
 ];
 
-
 const TIMEFRAME_CONFIG = {
   "1D": {
     unit: "minutes",
     interval: "5",
     days: 2,
   },
+
   "1W": {
     unit: "minutes",
     interval: "15",
     days: 7,
   },
+
   "1M": {
     unit: "minutes",
     interval: "30",
     days: 30,
   },
+
   "3M": {
     unit: "days",
     interval: "1",
     days: 90,
   },
+
   "1Y": {
     unit: "days",
     interval: "1",
     days: 365,
   },
 };
-
 
 export function TerminalProvider({ children }) {
   /*
@@ -77,8 +91,29 @@ export function TerminalProvider({ children }) {
   const [selectedSymbol, setSelectedSymbol] =
     useState(TERMINAL_SYMBOLS[0]);
 
-    const [selectedTimeframe, setSelectedTimeframe] =
-  useState("1D");
+  /*
+    Keep selected symbol available to the
+    WebSocket listener without reconnecting
+    the WebSocket whenever selection changes.
+  */
+  const selectedSymbolRef = useRef(
+    TERMINAL_SYMBOLS[0],
+  );
+
+  /*
+    Live quotes received through WebSocket.
+
+    This is the single source of truth for
+    current market prices after WebSocket
+    becomes available.
+  */
+  const liveQuotesRef = useRef({});
+
+  /*
+    Selected chart timeframe.
+  */
+  const [selectedTimeframe, setSelectedTimeframe] =
+    useState("1D");
 
   /*
     Real quote for currently selected symbol.
@@ -94,14 +129,6 @@ export function TerminalProvider({ children }) {
 
   /*
     Real quotes for all Watchlist symbols.
-
-    Structure:
-
-    {
-      RELIANCE: {...quote},
-      TCS: {...quote},
-      INFY: {...quote}
-    }
   */
   const [watchlistQuotes, setWatchlistQuotes] =
     useState({});
@@ -112,26 +139,39 @@ export function TerminalProvider({ children }) {
   const [watchlistError, setWatchlistError] =
     useState("");
 
-    
-    const [historicalCandles, setHistoricalCandles] =
-  useState([]);
+  /*
+    Historical candles for chart.
+  */
+  const [historicalCandles, setHistoricalCandles] =
+    useState([]);
 
-const [historicalLoading, setHistoricalLoading] =
-  useState(false);
+  const [historicalLoading, setHistoricalLoading] =
+    useState(false);
 
-const [historicalError, setHistoricalError] =
-  useState("");
+  const [historicalError, setHistoricalError] =
+    useState("");
+
+  /*
+    Frontend WebSocket connection status.
+  */
+  const [marketConnectionStatus, setMarketConnectionStatus] =
+    useState("disconnected");
+
+  /*
+    Keep ref synchronized with selected symbol.
+  */
+  useEffect(() => {
+    selectedSymbolRef.current = selectedSymbol;
+  }, [selectedSymbol]);
 
   /*
     Fetch quote for selected symbol.
 
-    Watchlist
-       ↓
-    selectedSymbol
-       ↓
-    backend API
-       ↓
-    selectedQuote
+    REST is used only for the initial/fallback
+    quote.
+
+    If WebSocket has already supplied a live
+    quote, REST is NOT allowed to overwrite it.
   */
   useEffect(() => {
     let mounted = true;
@@ -153,7 +193,17 @@ const [historicalError, setHistoricalError] =
           return;
         }
 
-        setSelectedQuote(data);
+        /*
+          Do not overwrite an already available
+          WebSocket price.
+        */
+        if (
+          !liveQuotesRef.current[
+            selectedSymbol.symbol
+          ]
+        ) {
+          setSelectedQuote(data);
+        }
       } catch (error) {
         console.error(
           "Selected symbol quote error:",
@@ -161,7 +211,17 @@ const [historicalError, setHistoricalError] =
         );
 
         if (mounted) {
-          setSelectedQuote(null);
+          /*
+            Only clear the quote when there is
+            no live WebSocket quote available.
+          */
+          if (
+            !liveQuotesRef.current[
+              selectedSymbol.symbol
+            ]
+          ) {
+            setSelectedQuote(null);
+          }
 
           setQuoteError(
             error.message ||
@@ -185,8 +245,10 @@ const [historicalError, setHistoricalError] =
   /*
     Fetch real quotes for all Watchlist symbols.
 
-    We use Promise.allSettled so one failed symbol
-    does not stop the remaining symbols.
+    REST provides initial values.
+
+    WebSocket becomes the source of truth
+    for live/current values.
   */
   useEffect(() => {
     let mounted = true;
@@ -217,7 +279,10 @@ const [historicalError, setHistoricalError] =
 
         results.forEach((result) => {
           if (result.status === "fulfilled") {
-            const { symbol, quote } = result.value;
+            const {
+              symbol,
+              quote,
+            } = result.value;
 
             nextQuotes[symbol] = quote;
           } else {
@@ -228,9 +293,37 @@ const [historicalError, setHistoricalError] =
           }
         });
 
-        setWatchlistQuotes(nextQuotes);
+        /*
+          Merge REST values with existing live
+          WebSocket values.
 
-        if (Object.keys(nextQuotes).length === 0) {
+          Live WebSocket values always win.
+        */
+        setWatchlistQuotes(
+          (previousQuotes) => {
+            const mergedQuotes = {
+              ...nextQuotes,
+              ...previousQuotes,
+            };
+
+            Object.entries(
+              liveQuotesRef.current,
+            ).forEach(
+              ([symbol, liveQuote]) => {
+                mergedQuotes[symbol] =
+                  liveQuote;
+              },
+            );
+
+            return mergedQuotes;
+          },
+        );
+
+        if (
+          Object.keys(nextQuotes).length === 0 &&
+          Object.keys(liveQuotesRef.current)
+            .length === 0
+        ) {
           setWatchlistError(
             "Unable to load watchlist market data",
           );
@@ -261,95 +354,313 @@ const [historicalError, setHistoricalError] =
     };
   }, []);
 
-
+  /*
+    Fetch historical candles for selected symbol/timeframe.
+  */
   useEffect(() => {
-  let mounted = true;
+    let mounted = true;
 
-  const fetchHistoricalCandles = async () => {
-    if (!selectedSymbol?.instrumentKey) {
-      return;
-    }
-
-    const config =
-      TIMEFRAME_CONFIG[selectedTimeframe];
-
-    if (!config) {
-      return;
-    }
-
-    try {
-      setHistoricalLoading(true);
-      setHistoricalError("");
-
-      const today = new Date();
-
-      const toDate =
-        today.toISOString().split("T")[0];
-
-      const fromDate = new Date(today);
-
-      fromDate.setDate(
-        fromDate.getDate() - config.days,
-      );
-
-      const from =
-        fromDate.toISOString().split("T")[0];
-
-      const response =
-        await getHistoricalCandles({
-          instrumentKey:
-            selectedSymbol.instrumentKey,
-
-          unit: config.unit,
-
-          interval: config.interval,
-
-          from,
-
-          to: toDate,
-        });
-
-      if (!mounted) {
+    const fetchHistoricalCandles = async () => {
+      if (!selectedSymbol?.instrumentKey) {
         return;
       }
 
-      const candles = Array.isArray(response)
-  ? response
-  : [];
+      const config =
+        TIMEFRAME_CONFIG[selectedTimeframe];
+
+      if (!config) {
+        return;
+      }
+
+      try {
+        setHistoricalLoading(true);
+        setHistoricalError("");
+
+        const today = new Date();
+
+        const toDate =
+          today.toISOString().split("T")[0];
+
+        const fromDate = new Date(today);
+
+        fromDate.setDate(
+          fromDate.getDate() - config.days,
+        );
+
+        const from =
+          fromDate.toISOString().split("T")[0];
+
+        const response =
+  await getMarketIndicators({
+    instrumentKey:
+      selectedSymbol.instrumentKey,
+
+    unit: config.unit,
+
+    interval: config.interval,
+
+    from,
+
+    to: toDate,
+
+    smaPeriod: 20,
+    emaPeriod: 20,
+    rsiPeriod: 14,
+    macdFastPeriod: 12,
+    macdSlowPeriod: 26,
+    macdSignalPeriod: 9,
+  });
+
+        if (!mounted) {
+          return;
+        }
+
+       const candles = Array.isArray(response?.candles)
+  ? response.candles
+  : []; 
 
 setHistoricalCandles(candles);
-    } catch (error) {
-      console.error(
-        "Historical candles error:",
-        error,
+      } catch (error) {
+        console.error(
+          "Historical candles error:",
+          error,
+        );
+
+        if (mounted) {
+          setHistoricalCandles([]);
+
+          setHistoricalError(
+            error.message ||
+              "Unable to load historical market data",
+          );
+        }
+      } finally {
+        if (mounted) {
+          setHistoricalLoading(false);
+        }
+      }
+    };
+
+    fetchHistoricalCandles();
+
+    return () => {
+      mounted = false;
+    };
+  }, [selectedSymbol, selectedTimeframe]);
+
+  /*
+    Connect to TradeXen frontend WebSocket.
+
+    WebSocket is created once when
+    TerminalProvider mounts.
+
+    It is not recreated when the selected
+    symbol changes.
+  */
+  useEffect(() => {
+    const unsubscribe =
+      subscribeMarketWebSocket(
+        (message) => {
+          /*
+            Connection status.
+          */
+          if (message?.type === "connection") {
+            setMarketConnectionStatus(
+              message.status ||
+                "disconnected",
+            );
+
+            return;
+          }
+
+          /*
+            Ignore messages that are not
+            market-data messages.
+          */
+          if (
+            message?.type !== "market_data"
+          ) {
+            return;
+          }
+
+          const feeds =
+            message?.data?.feeds;
+
+          if (!Array.isArray(feeds)) {
+            return;
+          }
+
+          /*
+            Update Watchlist quotes.
+          */
+          setWatchlistQuotes(
+            (previousQuotes) => {
+              const nextQuotes = {
+                ...previousQuotes,
+              };
+
+              feeds.forEach((feed) => {
+                const symbolData =
+                  TERMINAL_SYMBOLS.find(
+                    (item) =>
+                      item.instrumentKey ===
+                      feed.instrumentKey,
+                  );
+
+                if (!symbolData) {
+                  return;
+                }
+
+                const price =
+                  feed.price ?? null;
+
+                const previousClose =
+                  feed.previousClose ?? null;
+
+                const change =
+                  price !== null &&
+                  previousClose !== null
+                    ? price - previousClose
+                    : null;
+
+                /*
+                  Create one normalized live
+                  quote object.
+
+                  This exact object is used by
+                  Watchlist and selected quote.
+                */
+                const liveQuote = {
+                  instrumentKey:
+                    feed.instrumentKey,
+
+                  symbol:
+                    symbolData.symbol,
+
+                  price,
+
+                  change,
+
+                  previousClose,
+
+                  timestamp:
+                    feed.lastTradedTime ||
+                    message.data
+                      .currentTimestamp,
+                };
+
+                /*
+                  Keep latest WebSocket value
+                  in the ref so REST cannot
+                  overwrite it later.
+                */
+                liveQuotesRef.current[
+                  symbolData.symbol
+                ] = liveQuote;
+
+                nextQuotes[
+                  symbolData.symbol
+                ] = liveQuote;
+              });
+
+              return nextQuotes;
+            },
+          );
+
+          /*
+            Update selected symbol quote.
+          */
+          const currentSelectedSymbol =
+            selectedSymbolRef.current;
+
+          if (
+            !currentSelectedSymbol
+              ?.instrumentKey
+          ) {
+            return;
+          }
+
+          const liveFeed =
+            feeds.find(
+              (feed) =>
+                feed.instrumentKey ===
+                currentSelectedSymbol.instrumentKey,
+            );
+
+          if (!liveFeed) {
+            return;
+          }
+
+          const price =
+            liveFeed.price ?? null;
+
+          const previousClose =
+            liveFeed.previousClose ?? null;
+
+          const change =
+            price !== null &&
+            previousClose !== null
+              ? price - previousClose
+              : null;
+
+          const liveSelectedQuote = {
+            instrumentKey:
+              liveFeed.instrumentKey,
+
+            symbol:
+              currentSelectedSymbol.symbol,
+
+            price,
+
+            change,
+
+            previousClose,
+
+            timestamp:
+              liveFeed.lastTradedTime ||
+              message.data
+                .currentTimestamp,
+          };
+
+          /*
+            Store selected symbol's latest
+            WebSocket value.
+          */
+          liveQuotesRef.current[
+            currentSelectedSymbol.symbol
+          ] = liveSelectedQuote;
+
+          /*
+            WebSocket is the final source
+            of truth for current price.
+          */
+          setSelectedQuote(
+            liveSelectedQuote,
+          );
+        },
       );
 
-      if (mounted) {
-        setHistoricalCandles([]);
+    return unsubscribe;
+  }, []);
 
-        setHistoricalError(
-          error.message ||
-            "Unable to load historical market data",
-        );
-      }
-    } finally {
-      if (mounted) {
-        setHistoricalLoading(false);
-      }
-    }
-  };
-
-  fetchHistoricalCandles();
-
-  return () => {
-    mounted = false;
-  };
-}, [selectedSymbol, selectedTimeframe]);
   /*
     Select a symbol from Watchlist.
   */
   const selectSymbol = (symbolData) => {
     setSelectedSymbol(symbolData);
+
+    /*
+      If we already have a live quote for
+      the selected symbol, immediately use it.
+    */
+    const liveQuote =
+      liveQuotesRef.current[
+        symbolData.symbol
+      ];
+
+    if (liveQuote) {
+      setSelectedQuote(liveQuote);
+    }
   };
 
   return (
@@ -368,8 +679,11 @@ setHistoricalCandles(candles);
         historicalCandles,
         historicalLoading,
         historicalError,
+
         selectedTimeframe,
-          setSelectedTimeframe,
+        setSelectedTimeframe,
+
+        marketConnectionStatus,
 
         selectSymbol,
 
@@ -382,7 +696,8 @@ setHistoricalCandles(candles);
 }
 
 export function useTerminal() {
-  const context = useContext(TerminalContext);
+  const context =
+    useContext(TerminalContext);
 
   if (!context) {
     throw new Error(

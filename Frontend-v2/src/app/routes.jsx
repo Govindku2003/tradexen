@@ -1,24 +1,33 @@
-import { createBrowserRouter } from "react-router-dom";
+import {
+  createBrowserRouter,
+} from "react-router-dom";
+
 import AppLayout from "../components/layout/AppLayout";
 
-// NEW:
-// Actual Terminal page import kiya.
-// Pehle "/" route par Placeholder render ho raha tha.
 import Terminal from "../pages/Terminal";
+import Markets from "../pages/Markets";
+import Portfolio from "../pages/Portfolio";
+import Orders from "../pages/Orders";
+
+import Login from "../pages/Login";
+import Signup from "../pages/Signup";
+import ForgotPassword from "../pages/ForgotPassword";
+
+import Backtesting from "../pages/Backtesting";
 
 import { useTheme } from "../context/ThemeContext";
+import Strategies from "../pages/Strategies";
+import Bots from "../pages/Bots";
 
 /*
-  Temporary Placeholder component
-
-  Abhi Markets, Portfolio, Orders etc. ke liye
-  ye placeholder use hoga.
-
-  In pages ko hum baad ke steps mein
-  individually build karenge.
+|--------------------------------------------------------------------------
+| PLACEHOLDER
+|--------------------------------------------------------------------------
 */
+
 function Placeholder({ title }) {
   const { theme } = useTheme();
+
   const isDark = theme === "dark";
 
   return (
@@ -38,7 +47,9 @@ function Placeholder({ title }) {
       >
         <h1
           className={`text-xl font-bold sm:text-2xl ${
-            isDark ? "text-white" : "text-slate-900"
+            isDark
+              ? "text-white"
+              : "text-slate-900"
           }`}
         >
           {title}
@@ -46,7 +57,9 @@ function Placeholder({ title }) {
 
         <p
           className={`mt-2 text-sm ${
-            isDark ? "text-slate-400" : "text-slate-500"
+            isDark
+              ? "text-slate-400"
+              : "text-slate-500"
           }`}
         >
           TradeXen trading terminal
@@ -57,85 +70,157 @@ function Placeholder({ title }) {
 }
 
 /*
-  TradeXen Router
-
-  AppLayout common layout provide karta hai:
-  - Sidebar
-  - Topbar
-  - Mobile Navigation
-
-  Child routes Outlet ke andar render honge.
+|--------------------------------------------------------------------------
+| ROUTER
+|--------------------------------------------------------------------------
 */
+
 const router = createBrowserRouter([
+  /*
+  |--------------------------------------------------------------------------
+  | PUBLIC AUTH ROUTES
+  |--------------------------------------------------------------------------
+  */
+
+  {
+    path: "/login",
+    element: <Login />,
+  },
+
+  {
+    path: "/signup",
+    element: <Signup />,
+  },
+
+  {
+    path: "/forgot-password",
+    element: <ForgotPassword />,
+  },
+
+  /*
+  |--------------------------------------------------------------------------
+  | TRADING APPLICATION
+  |--------------------------------------------------------------------------
+  */
+
   {
     element: <AppLayout />,
 
     children: [
       /*
-        TERMINAL
-
-        IMPORTANT:
-        Pehle yahan:
-
-        <Placeholder title="TradeXen Terminal" />
-
-        tha.
-
-        Ab actual Terminal page render hoga.
+      |--------------------------------------------------------------------------
+      | TERMINAL
+      |--------------------------------------------------------------------------
       */
+
       {
         path: "/",
         element: <Terminal />,
       },
 
       /*
-        Baaki pages abhi placeholder hain.
-        Inko baad mein actual UI pages se replace karenge.
+      |--------------------------------------------------------------------------
+      | MARKETS
+      |--------------------------------------------------------------------------
       */
 
       {
         path: "/markets",
-        element: <Placeholder title="Markets" />,
+        element: <Markets />,
       },
+
+      /*
+      |--------------------------------------------------------------------------
+      | PORTFOLIO
+      |--------------------------------------------------------------------------
+      */
 
       {
         path: "/portfolio",
-        element: <Placeholder title="Portfolio" />,
+        element: <Portfolio />,
       },
+
+      /*
+      |--------------------------------------------------------------------------
+      | ORDERS
+      |--------------------------------------------------------------------------
+      */
 
       {
         path: "/orders",
-        element: <Placeholder title="Orders" />,
+        element: <Orders />,
       },
 
+      /*
+      |--------------------------------------------------------------------------
+      | STRATEGIES
+      |--------------------------------------------------------------------------
+      */
+
       {
-        path: "/strategies",
-        element: <Placeholder title="Strategies" />,
-      },
+  path: "/strategies",
+  element: <Strategies />,
+},
+
+      /*
+      |--------------------------------------------------------------------------
+      | BACKTESTING
+      |--------------------------------------------------------------------------
+      */
 
       {
         path: "/backtesting",
-        element: <Placeholder title="Backtesting" />,
+        element: <Backtesting />,
       },
+
+      /*
+      |--------------------------------------------------------------------------
+      | ANALYTICS
+      |--------------------------------------------------------------------------
+      */
 
       {
         path: "/analytics",
-        element: <Placeholder title="Analytics" />,
+        element: (
+          <Placeholder title="Analytics" />
+        ),
       },
 
+      /*
+      |--------------------------------------------------------------------------
+      | BOTS
+      |--------------------------------------------------------------------------
+      */
+
       {
-        path: "/bots",
-        element: <Placeholder title="Bot Control" />,
-      },
+  path: "/bots",
+  element: <Bots />,
+},
+
+      /*
+      |--------------------------------------------------------------------------
+      | ACTIVITY LOGS
+      |--------------------------------------------------------------------------
+      */
 
       {
         path: "/activity-logs",
-        element: <Placeholder title="Activity Logs" />,
+        element: (
+          <Placeholder title="Activity Logs" />
+        ),
       },
+
+      /*
+      |--------------------------------------------------------------------------
+      | SETTINGS
+      |--------------------------------------------------------------------------
+      */
 
       {
         path: "/settings",
-        element: <Placeholder title="Settings" />,
+        element: (
+          <Placeholder title="Settings" />
+        ),
       },
     ],
   },

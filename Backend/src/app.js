@@ -10,6 +10,13 @@ import authRoutes from "./routes/auth.routes.js";
 import tradingAccountRoutes from "./routes/tradingAccount.routes.js";
 import marketDataRoutes from "./routes/marketData.routes.js";
 import orderRoutes from "./routes/order.routes.js";
+import positionRoutes from "./routes/position.routes.js";
+import backtestingRoutes from "./routes/backtesting.routes.js";
+import strategyRoutes from "./routes/strategy.routes.js";
+import portfolioRoutes from "./routes/portfolio.routes.js";
+import botRoutes from "./routes/bot.routes.js";
+import tradeRoutes from "./routes/trade.routes.js";
+
 
 const app = express();
 
@@ -48,7 +55,12 @@ app.use("/api/auth", authRoutes);
 app.use("/api/trading-account", tradingAccountRoutes);
 app.use("/api/market-data", marketDataRoutes);
 app.use("/api/orders", orderRoutes);
-
+app.use("/api/positions", positionRoutes);
+app.use("/api/backtesting", backtestingRoutes);
+app.use("/api/strategy", strategyRoutes);
+app.use("/api/portfolio", portfolioRoutes);
+app.use("/api/bots", botRoutes);
+app.use("/api/trades", tradeRoutes);
 /*
  * Root API
  */

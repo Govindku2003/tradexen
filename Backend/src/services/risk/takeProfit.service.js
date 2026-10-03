@@ -3,14 +3,47 @@ const calculateTakeProfit = ({
   stopLossPrice,
   riskRewardRatio = 2,
   side = "BUY",
+  minRiskRewardRatio = 1,
+  maxRiskRewardRatio = 10,
+  tickSize = 0.05,
 }) => {
   if (
-    entryPrice <= 0 ||
-    stopLossPrice <= 0 ||
+    !Number.isFinite(entryPrice) ||
+    entryPrice <= 0
+  ) {
+    throw new Error("Entry price must be positive");
+  }
+
+  if (
+    !Number.isFinite(stopLossPrice) ||
+    stopLossPrice <= 0
+  ) {
+    throw new Error(
+      "Stop loss price must be positive"
+    );
+  }
+
+  if (
+    !Number.isFinite(riskRewardRatio) ||
     riskRewardRatio <= 0
   ) {
     throw new Error(
-      "Entry price, stop loss and risk-reward ratio must be positive"
+      "Risk-reward ratio must be positive"
+    );
+  }
+
+  if (
+    riskRewardRatio < minRiskRewardRatio ||
+    riskRewardRatio > maxRiskRewardRatio
+  ) {
+    throw new Error(
+      `Risk-reward ratio must be between ${minRiskRewardRatio} and ${maxRiskRewardRatio}`
+    );
+  }
+
+  if (!["BUY", "SELL"].includes(side)) {
+    throw new Error(
+      "Trade side must be BUY or SELL"
     );
   }
 
@@ -27,8 +60,9 @@ const calculateTakeProfit = ({
     risk = entryPrice - stopLossPrice;
 
     takeProfitPrice =
-      entryPrice + risk * riskRewardRatio;
-  } else if (side === "SELL") {
+      entryPrice +
+      risk * riskRewardRatio;
+  } else {
     if (stopLossPrice <= entryPrice) {
       throw new Error(
         "For SELL, stop loss must be above entry price"
@@ -38,20 +72,24 @@ const calculateTakeProfit = ({
     risk = stopLossPrice - entryPrice;
 
     takeProfitPrice =
-      entryPrice - risk * riskRewardRatio;
-  } else {
-    throw new Error(
-      "Trade side must be BUY or SELL"
-    );
+      entryPrice -
+      risk * riskRewardRatio;
   }
+
+  const roundedTakeProfit =
+    Math.round(takeProfitPrice / tickSize) *
+    tickSize;
 
   return {
     entryPrice,
     stopLossPrice,
-    risk,
+    risk: Number(risk.toFixed(2)),
     riskRewardRatio,
     side,
-    takeProfitPrice,
+    takeProfitPrice: Number(
+      roundedTakeProfit.toFixed(2)
+    ),
+    tickSize,
   };
 };
 
