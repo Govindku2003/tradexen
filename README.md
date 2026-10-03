@@ -1,4 +1,4 @@
-# TradePilot
+# TradeXen
 
 Real-Time Algorithmic Trading & Paper Trading Platform
 
