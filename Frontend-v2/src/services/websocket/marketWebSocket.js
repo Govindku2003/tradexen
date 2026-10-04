@@ -1,19 +1,32 @@
-const WS_URL =
-  import.meta.env.VITE_WS_URL ||
-  "ws://localhost:5000/ws";
+const getWebSocketUrl = () => {
+  const configuredApiUrl =
+    import.meta.env.VITE_API_BASE_URL ||
+    "http://localhost:5000/api";
+
+  try {
+    const apiUrl = new URL(configuredApiUrl);
+
+    const protocol =
+      apiUrl.protocol === "https:" ? "wss:" : "ws:";
+
+    return `${protocol}//${apiUrl.host}/ws`;
+  } catch {
+    return "ws://localhost:5000/ws";
+  }
+};
+
+const WS_URL = getWebSocketUrl();
 
 let socket = null;
 let reconnectTimer = null;
-let reconnectAttempts = 0;
+let reconnectDelay = 2000;
 
 const listeners = new Set();
 
-const MAX_RECONNECT_DELAY = 30000;
-
-const notifyListeners = (data) => {
+const notifyListeners = (message) => {
   listeners.forEach((listener) => {
     try {
-      listener(data);
+      listener(message);
     } catch (error) {
       console.error(
         "Market WebSocket listener error:",
@@ -26,85 +39,86 @@ const notifyListeners = (data) => {
 const connectMarketWebSocket = () => {
   if (
     socket &&
-    (
-      socket.readyState === WebSocket.OPEN ||
-      socket.readyState === WebSocket.CONNECTING
-    )
+    (socket.readyState === WebSocket.OPEN ||
+      socket.readyState === WebSocket.CONNECTING)
   ) {
     return;
   }
 
-  socket = new WebSocket(WS_URL);
+  try {
+    socket = new WebSocket(WS_URL);
 
-  socket.onopen = () => {
-    console.log(
-      "TradeXen frontend WebSocket connected",
-    );
+    socket.onopen = () => {
+      console.log(
+        "TradeXen frontend WebSocket connected",
+      );
 
-    reconnectAttempts = 0;
+      reconnectDelay = 2000;
 
-    notifyListeners({
-      type: "connection",
-      status: "connected",
-    });
-  };
+      notifyListeners({
+        type: "connection",
+        status: "connected",
+      });
+    };
 
-  socket.onmessage = (event) => {
-    try {
-      const message = JSON.parse(event.data);
+    socket.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data);
 
-      notifyListeners(message);
-    } catch (error) {
+        notifyListeners(message);
+      } catch (error) {
+        console.error(
+          "Market WebSocket message parse error:",
+          error,
+        );
+      }
+    };
+
+    socket.onerror = (error) => {
       console.error(
-        "Market WebSocket message parse error:",
+        "TradeXen frontend WebSocket error:",
         error,
       );
-    }
-  };
 
-  socket.onerror = (error) => {
+      notifyListeners({
+        type: "connection",
+        status: "error",
+      });
+    };
+
+    socket.onclose = () => {
+      socket = null;
+
+      notifyListeners({
+        type: "connection",
+        status: "disconnected",
+      });
+
+      if (listeners.size === 0) {
+        return;
+      }
+
+      clearTimeout(reconnectTimer);
+
+      console.log(
+        `Frontend WebSocket reconnecting in ${reconnectDelay / 1000}s...`,
+      );
+
+      reconnectTimer = setTimeout(() => {
+        connectMarketWebSocket();
+
+        reconnectDelay = Math.min(
+          reconnectDelay * 2,
+          30000,
+        );
+      }, reconnectDelay);
+    };
+  } catch (error) {
     console.error(
-      "TradeXen frontend WebSocket error:",
+      "TradeXen frontend WebSocket connection error:",
       error,
     );
-  };
-
-  socket.onclose = () => {
-    socket = null;
-
-    notifyListeners({
-      type: "connection",
-      status: "disconnected",
-    });
-
-    scheduleReconnect();
-  };
-};
-
-const scheduleReconnect = () => {
-  if (reconnectTimer) {
-    return;
   }
-
-  reconnectAttempts += 1;
-
-  const delay = Math.min(
-    2000 *
-      2 ** (reconnectAttempts - 1),
-    MAX_RECONNECT_DELAY,
-  );
-
-  console.log(
-    `Frontend WebSocket reconnecting in ${
-      delay / 1000
-    }s...`,
-  );
-
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null;
-
-    connectMarketWebSocket();
-  }, delay);
 };
 
 const subscribeMarketWebSocket = (listener) => {
@@ -120,21 +134,22 @@ const subscribeMarketWebSocket = (listener) => {
 
   return () => {
     listeners.delete(listener);
+
+    if (listeners.size === 0) {
+      clearTimeout(reconnectTimer);
+    }
   };
 };
 
 const disconnectMarketWebSocket = () => {
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-  }
-
-  reconnectAttempts = 0;
+  clearTimeout(reconnectTimer);
 
   if (socket) {
     socket.close();
     socket = null;
   }
+
+  listeners.clear();
 };
 
 export {
