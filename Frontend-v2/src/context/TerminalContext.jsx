@@ -84,6 +84,73 @@ const TIMEFRAME_CONFIG = {
   },
 };
 
+/*
+  Return YYYY-MM-DD using local date values.
+
+  We intentionally avoid toISOString() here because
+  ISO conversion uses UTC and can shift the calendar
+  date depending on timezone.
+*/
+const formatDate = (date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+};
+
+/*
+  Move a date to the latest weekday.
+
+  Saturday -> Friday
+  Sunday   -> Friday
+
+  This prevents the historical market-data API
+  from being queried for a weekend date.
+*/
+const getLatestTradingDate = (date) => {
+  const result = new Date(date);
+
+  const day = result.getDay();
+
+  if (day === 0) {
+    result.setDate(result.getDate() - 2);
+  } else if (day === 6) {
+    result.setDate(result.getDate() - 1);
+  }
+
+  return result;
+};
+
+/*
+  Build a historical date range based on the selected
+  timeframe.
+
+  Example:
+
+  Sunday 2026-10-04
+       ↓
+  latest trading date
+       ↓
+  Friday 2026-10-02
+*/
+const getHistoricalDateRange = (days) => {
+  const today = new Date();
+
+  const toDateObject = getLatestTradingDate(today);
+
+  const fromDateObject = new Date(toDateObject);
+
+  fromDateObject.setDate(
+    fromDateObject.getDate() - days,
+  );
+
+  return {
+    from: formatDate(fromDateObject),
+    to: formatDate(toDateObject),
+  };
+};
+
 export function TerminalProvider({ children }) {
   /*
     Currently selected symbol.
@@ -355,7 +422,8 @@ export function TerminalProvider({ children }) {
   }, []);
 
   /*
-    Fetch historical candles for selected symbol/timeframe.
+    Fetch historical candles for selected
+    symbol/timeframe.
   */
   useEffect(() => {
     let mounted = true;
@@ -376,50 +444,73 @@ export function TerminalProvider({ children }) {
         setHistoricalLoading(true);
         setHistoricalError("");
 
-        const today = new Date();
+        /*
+          IMPORTANT:
 
-        const toDate =
-          today.toISOString().split("T")[0];
+          Do not use today's calendar date directly.
 
-        const fromDate = new Date(today);
+          On Saturday/Sunday the market is closed,
+          so the historical API may return 404.
 
-        fromDate.setDate(
-          fromDate.getDate() - config.days,
+          Example:
+          Sunday 2026-10-04
+              ↓
+          Friday 2026-10-02
+        */
+        const {
+          from,
+          to,
+        } = getHistoricalDateRange(
+          config.days,
         );
 
-        const from =
-          fromDate.toISOString().split("T")[0];
+        console.log(
+          "Historical market data range:",
+          {
+            symbol: selectedSymbol.symbol,
+            timeframe: selectedTimeframe,
+            from,
+            to,
+          },
+        );
 
         const response =
-  await getMarketIndicators({
-    instrumentKey:
-      selectedSymbol.instrumentKey,
+          await getMarketIndicators({
+            instrumentKey:
+              selectedSymbol.instrumentKey,
 
-    unit: config.unit,
+            unit: config.unit,
 
-    interval: config.interval,
+            interval: config.interval,
 
-    from,
+            from,
 
-    to: toDate,
+            to,
 
-    smaPeriod: 20,
-    emaPeriod: 20,
-    rsiPeriod: 14,
-    macdFastPeriod: 12,
-    macdSlowPeriod: 26,
-    macdSignalPeriod: 9,
-  });
+            smaPeriod: 20,
+            emaPeriod: 20,
+            rsiPeriod: 14,
+            macdFastPeriod: 12,
+            macdSlowPeriod: 26,
+            macdSignalPeriod: 9,
+          });
 
         if (!mounted) {
           return;
         }
 
-       const candles = Array.isArray(response?.candles)
-  ? response.candles
-  : []; 
+        const candles =
+  Array.isArray(response?.data?.candles)
+    ? response.data.candles
+    : [];
 
-setHistoricalCandles(candles);
+        if (candles.length === 0) {
+          throw new Error(
+            "No historical candles found",
+          );
+        }
+
+        setHistoricalCandles(candles);
       } catch (error) {
         console.error(
           "Historical candles error:",
